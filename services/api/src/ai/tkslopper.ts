@@ -554,6 +554,9 @@ export class TkslopperClient {
   }
 
   private async exchange(): Promise<Grant> {
+    // Expiry is measured from before the request so round-trip latency never
+    // makes a grant look longer-lived than the control plane issued it.
+    const requestedAt = this.now();
     let response: Response;
     try {
       response = await this.dispatch(
@@ -646,7 +649,7 @@ export class TkslopperClient {
       );
     }
     const lifetime = body.expires_in * 1_000;
-    const expiresAt = this.now() + lifetime;
+    const expiresAt = requestedAt + lifetime;
     // Refresh a minute early, or halfway through a grant shorter than two
     // minutes, so a short environment TTL cannot force an exchange per call.
     return {
