@@ -71,8 +71,11 @@ code and provider keys.
 
 Aliases must match `^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$`. If the transport is
 `tkslopper` and any required value is missing or invalid, every model call
-fails with a message naming the problem. Tapplet never falls back to the direct
-providers on its own.
+fails (HTTP 503 to the iPad) and the Worker logs a reason naming each bad
+setting; the operations panel shows the same reason. Tapplet never falls back
+to the direct providers on its own. When a service binding is present its URL
+may be left empty; a URL that is set must still be an HTTPS origin with no
+path.
 
 ## Operator setup in tkslopper
 
@@ -107,7 +110,10 @@ Tapplet does not create any of this; tkslopper operators set it up per stage.
 1. Before cutover, check `model_call` `durationMs` in the operational traces.
    If p95 for generate, revise or repair is near 40 seconds, agree a longer
    envelope with the operators first: raise the route deadline and Tapplet's
-   abort together, keeping the route deadline below Tapplet's abort.
+   abort together, keeping the route deadline below Tapplet's abort. Keep the
+   whole request inside the iPad's 150-second timeout: one generation can make
+   a grant exchange (5 s) plus up to three model calls (generate and two
+   repairs), so the per-call abort should stay at or below about 45 seconds.
 2. Store the credential for the target stage:
    `npx wrangler secret put TKSLOPPER_SERVICE_CREDENTIAL --profile tinkertanker`.
 3. Set the URLs and aliases. If full canonical images should be reviewed, ask
@@ -124,6 +130,9 @@ Tapplet does not create any of this; tkslopper operators set it up per stage.
 
 For a local transport smoke test, bind the local tkslopper dev Workers as the
 `TKSLOPPER_GATEWAY` and `TKSLOPPER_CONTROL_PLANE` service bindings (the URL
-variables must still be HTTPS values). The dev gateway's fixture route returns
-the plain text `fixture response`, which is not JSON, so it exercises
-authentication and transport only, not artifact semantics.
+variables may then be left empty). The dev gateway's fixture route returns a
+well-formed envelope whose output text is `fixture response`, which is not
+JSON. Generation therefore spends its repairs and ends with invalid model
+output, publication review reports malformed JSON, and image review reports
+unavailable. Use it for authentication and transport smoke tests only, not
+artifact semantics.

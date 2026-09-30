@@ -15,6 +15,8 @@ import { ModelProviderError } from "../src/ai/provider";
 import {
   createTkslopperModelProvider,
   readTkslopperConfig,
+  TkslopperClient,
+  TkslopperError,
   TkslopperGrantCache,
   TkslopperImageSafetyInspector,
   TkslopperModelProvider,
@@ -242,8 +244,8 @@ const KEY_PATTERN =
 describe("tkslopper configuration", () => {
   it("defaults efforts, endpoint and request limit", () => {
     expect(config()).toMatchObject({
-      controlPlaneUrl: CONTROL,
-      gatewayUrl: GATEWAY,
+      controlPlane: { url: CONTROL },
+      gateway: { url: GATEWAY },
       artifactEffort: "high",
       reviewEffort: "low",
       artifactEndpoint: "responses",
@@ -283,11 +285,24 @@ describe("tkslopper configuration", () => {
     expect(result.reason).not.toContain("tkgk_group_key");
   });
 
-  it("requires HTTPS even for loopback URLs and trims trailing slashes", () => {
+  it("requires HTTPS origins without a path and trims trailing slashes", () => {
+    for (const url of ["http://localhost:8787", `${GATEWAY}/prefix`, `${GATEWAY}/?x=1`])
+      expect(readTkslopperConfig(tkEnv({ TKSLOPPER_GATEWAY_URL: url })).ok).toBe(false);
+    expect(config({ TKSLOPPER_GATEWAY_URL: `${GATEWAY}/` }).gateway).toEqual({
+      url: GATEWAY,
+    });
+  });
+
+  it("makes a URL optional when its service binding is present", () => {
+    const binding = { fetch: vi.fn() } as unknown as Fetcher;
     expect(
-      readTkslopperConfig(tkEnv({ TKSLOPPER_GATEWAY_URL: "http://localhost:8787" })).ok,
+      config({ TKSLOPPER_GATEWAY_URL: "", TKSLOPPER_GATEWAY: binding }).gateway,
+    ).toEqual({ binding });
+    expect(
+      readTkslopperConfig(
+        tkEnv({ TKSLOPPER_GATEWAY_URL: "http://wrong", TKSLOPPER_GATEWAY: binding }),
+      ).ok,
     ).toBe(false);
-    expect(config({ TKSLOPPER_GATEWAY_URL: `${GATEWAY}/` }).gatewayUrl).toBe(GATEWAY);
   });
 });
 
@@ -675,8 +690,8 @@ describe("tkslopper errors", () => {
   });
 
   it.each([
-    ["non-JSON", () => new Response("fixture response", { status: 200 })],
-    ["a JSON scalar", () => Response.json("fixture response")],
+    ["non-JSON", () => new Response("not json", { status: 200 })],
+    ["a JSON scalar", () => Response.json("not an object")],
   ])("treats a %s success body as a retryable malformed response", async (_name, reply) => {
     const g = gateway([reply]);
     const error = await rejection(provider(g).generate(brief, []));
@@ -685,11 +700,13 @@ describe("tkslopper errors", () => {
     expect(g.calls).toHaveLength(1);
   });
 
-  it("attaches an abort signal to the exchange and every gateway call", async () => {
+  it("gives the exchange a 5 s abort and every gateway call a 45 s abort", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
     const g = gateway([responsesResponse()]);
     await provider(g).generate(brief, []);
     expect(g.exchanges[0]?.signal).toBeInstanceOf(AbortSignal);
     expect(g.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(timeout.mock.calls).toEqual([[5_000], [45_000]]);
   });
 
   it("uses a fresh idempotency key for every repair", async () => {
@@ -744,6 +761,116 @@ describe("tkslopper grant cache", () => {
     now += 2_000;
     await p.generate(brief, []);
     expect(g.exchanges).toHaveLength(2);
+  });
+
+  it("keeps using a valid grant when a refresh fails transiently, but not after a denial", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let now = 1_000_000;
+    const exchangeReplies = [
+      () => grantResponse(1),
+      () => errorResponse(503, "internal_error"),
+      () => errorResponse(403, "authorization_failed"),
+    ];
+    const g = gateway(
+      [responsesResponse(), responsesResponse(), responsesResponse()],
+      () => exchangeReplies.shift()!(),
+    );
+    const p = provider(g, {}, { now: () => now });
+    await p.generate(brief, []);
+    now += 850_000;
+    await expect(p.generate(brief, [])).resolves.toEqual({ html });
+    expect(g.calls[1]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}1`);
+    const denied = await rejection(p.generate(brief, []));
+    expect(denied.retryable).toBe(false);
+    expect(g.exchanges).toHaveLength(3);
+    expect(g.calls).toHaveLength(2);
+  });
+
+  it("does not use a grant within 5 s of expiry after a failed refresh", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let now = 1_000_000;
+    const g = gateway([responsesResponse()], (count) =>
+      count === 1 ? grantResponse(1) : errorResponse(503, "internal_error"),
+    );
+    const p = provider(g, {}, { now: () => now });
+    await p.generate(brief, []);
+    now += 896_000;
+    expect((await rejection(p.generate(brief, []))).retryable).toBe(true);
+    expect(g.calls).toHaveLength(1);
+  });
+
+  it("replaces a shared exchange that never settles and bounds every waiter", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      let now = 1_000_000;
+      const g = gateway([responsesResponse()], (count) =>
+        count === 1 ? new Promise<Response>(() => undefined) : grantResponse(count),
+      );
+      const p = provider(g, {}, { now: () => now });
+      const stuck = p.generate(brief, []);
+      const stuckError = rejection(stuck);
+      await vi.advanceTimersByTimeAsync(0);
+      now += 6_000;
+      await expect(p.generate(brief, [])).resolves.toEqual({ html });
+      expect(g.exchanges).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(6_000);
+      const error = await stuckError;
+      expect(error.message).toBe("Model access grant timed out");
+      expect(error.retryable).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a newer grant when an older one is later denied", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let now = 1_000_000;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const g = gateway([
+      async () => {
+        await gate;
+        return errorResponse(403, "authorization_failed");
+      },
+      responsesResponse(),
+      responsesResponse(),
+    ]);
+    const p = provider(g, {}, { now: () => now });
+    const first = rejection(p.generate(brief, []));
+    await vi.waitFor(() => expect(g.calls).toHaveLength(1));
+    now += 850_000;
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(2);
+    release();
+    expect((await first).retryable).toBe(false);
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(2);
+    expect(g.calls[2]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}2`);
+  });
+
+  it.each([
+    [
+      "a missing capability",
+      () => Response.json({ access_token: "t", token_type: "Bearer", expires_in: 900, capabilities: [ARTIFACT] }),
+      "Model access grant lacks a capability",
+      false,
+    ],
+    [
+      "a non-Bearer token",
+      () => Response.json({ access_token: "t", token_type: "MAC", expires_in: 900, capabilities: [ARTIFACT, REVIEW, IMAGE] }),
+      "Malformed model access grant",
+      true,
+    ],
+  ])("rejects a grant with %s", async (_name, reply, messageText, retryable) => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const g = gateway([responsesResponse()], reply);
+    const error = await rejection(provider(g).generate(brief, []));
+    expect(error.message).toBe(messageText);
+    expect(error.retryable).toBe(retryable);
+    expect(g.calls).toHaveLength(0);
   });
 
   it("shares one in-flight exchange between concurrent requests", async () => {
@@ -824,6 +951,27 @@ describe("tkslopper pre-flight size guard", () => {
     );
     expect(error.retryable).toBe(false);
     expect(g.mock).not.toHaveBeenCalled();
+  });
+
+  it("measures the serialised body in UTF-8 bytes, inclusive of the limit", async () => {
+    const limit = 2_048;
+    const g = gateway([responsesResponse()]);
+    const client = new TkslopperClient(
+      config({ TKSLOPPER_MAX_REQUEST_BYTES: String(limit) }),
+      { fetch: g.fetch, grantCache: new TkslopperGrantCache() },
+    );
+    const base = JSON.stringify({ model: ARTIFACT, input: "" }).length;
+    await expect(
+      client.request("/v1/responses", { model: ARTIFACT, input: "a".repeat(limit - base) }, "generate"),
+    ).resolves.toBeDefined();
+    const multibyte = "é".repeat(limit - base);
+    expect(JSON.stringify({ model: ARTIFACT, input: multibyte }).length).toBe(limit);
+    const error = await rejection(
+      client.request("/v1/responses", { model: ARTIFACT, input: multibyte }, "generate"),
+    );
+    expect(error).toBeInstanceOf(TkslopperError);
+    expect(error.retryable).toBe(false);
+    expect(g.calls).toHaveLength(1);
   });
 
   it("returns unavailable for oversized images without calling fetch", async () => {
@@ -1066,12 +1214,14 @@ describe("tkslopper wiring", () => {
     const g = gateway([]);
     vi.stubGlobal("fetch", g.fetch);
     const { database } = untouchedDatabase();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const missing = tkEnv({ DB: database, TKSLOPPER_GATEWAY_URL: undefined });
     const p = createConfiguredModelProvider(missing);
     expect(p.name).toBe("unavailable");
     const error = await rejection(p.generate(brief, []));
     expect(error.message).toContain("TKSLOPPER_GATEWAY_URL");
-    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("TKSLOPPER_GATEWAY_URL"));
+    errors.mockClear();
     await expect(
       createImageSafetyInspector(missing)?.inspect(new Uint8Array([1]), "image/jpeg"),
     ).resolves.toEqual({ status: "unavailable" });
@@ -1094,18 +1244,53 @@ describe("tkslopper wiring", () => {
       throw new Error("The public URL must not be used");
     });
     vi.stubGlobal("fetch", unused);
-    const binding = {
-      fetch: (request: Request) => g.fetch(request),
-    } as unknown as Fetcher;
+    const gatewayPaths: string[] = [];
+    const controlPlanePaths: string[] = [];
+    const binding = (paths: string[]) =>
+      ({
+        fetch: (request: Request) => {
+          paths.push(new URL(request.url).pathname);
+          return g.fetch(request);
+        },
+      }) as unknown as Fetcher;
     const p = createTkslopperModelProvider(
-      tkEnv({ TKSLOPPER_GATEWAY: binding, TKSLOPPER_CONTROL_PLANE: binding }),
+      tkEnv({
+        TKSLOPPER_GATEWAY_URL: "",
+        TKSLOPPER_CONTROL_PLANE_URL: "",
+        TKSLOPPER_GATEWAY: binding(gatewayPaths),
+        TKSLOPPER_CONTROL_PLANE: binding(controlPlanePaths),
+      }),
       { grantCache: new TkslopperGrantCache() },
     );
     await expect(p.generate(brief, [])).resolves.toEqual({ html });
+    expect(controlPlanePaths).toEqual(["/v1/token"]);
+    expect(gatewayPaths).toEqual(["/v1/responses"]);
     expect(g.exchanges[0]?.url).toBe("https://tkslopper.internal/v1/token");
     expect(g.calls[0]?.url).toBe("https://tkslopper.internal/v1/responses");
     expect(g.calls[0]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}1`);
     expect(unused).not.toHaveBeenCalled();
+  });
+
+  it("sends the credential only to the control plane when just the gateway is bound", async () => {
+    const g = gateway([responsesResponse()]);
+    const bound: string[] = [];
+    const publicCalls = gateway([], () => grantResponse(1));
+    vi.stubGlobal("fetch", publicCalls.fetch);
+    const p = createTkslopperModelProvider(
+      tkEnv({
+        TKSLOPPER_GATEWAY: {
+          fetch: (request: Request) => {
+            bound.push(new URL(request.url).pathname);
+            return g.fetch(request);
+          },
+        } as unknown as Fetcher,
+      }),
+      { grantCache: new TkslopperGrantCache() },
+    );
+    await expect(p.generate(brief, [])).resolves.toEqual({ html });
+    expect(bound).toEqual(["/v1/responses"]);
+    expect(publicCalls.exchanges.map((call) => call.url)).toEqual([`${CONTROL}/v1/token`]);
+    expect(JSON.stringify(g.calls)).not.toContain(CREDENTIAL_SECRET);
   });
 
   it("reports the transport and aliases in the admin overview", async () => {
@@ -1126,14 +1311,25 @@ describe("tkslopper wiring", () => {
     const tkslopper = await handleAdminRequest(request(), tkEnv(admin));
     expect(await tkslopper?.json()).toMatchObject({
       transport: "tkslopper",
+      transportProblem: null,
       aliases: { artifact: ARTIFACT, review: REVIEW, image: IMAGE },
     });
+    const broken = await handleAdminRequest(
+      request(),
+      tkEnv({ ...admin, TKSLOPPER_REVIEW_ALIAS: "" }),
+    );
+    expect(((await broken?.json()) as { transportProblem: string }).transportProblem)
+      .toContain("TKSLOPPER_REVIEW_ALIAS");
 
     const direct = await handleAdminRequest(
       request(),
       tkEnv({ ...admin, INFERENCE_TRANSPORT: undefined }),
     );
-    expect(await direct?.json()).toMatchObject({ transport: "direct", aliases: null });
+    expect(await direct?.json()).toMatchObject({
+      transport: "direct",
+      transportProblem: null,
+      aliases: null,
+    });
 
     const page = await handleAdminRequest(new Request("https://api.test/admin"), tkEnv(admin));
     expect(await page?.text()).toContain(

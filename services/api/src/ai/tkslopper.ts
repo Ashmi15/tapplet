@@ -36,9 +36,12 @@ export type PortableEffort = "low" | "medium" | "high";
 export type TkslopperArtifactEndpoint = "responses" | "chat";
 export type TkslopperOperation = ModelOperation | "image_review";
 
+/** Where a tkslopper Worker is reached: a service binding or a public URL. */
+export type TkslopperTarget = { binding: Fetcher } | { url: string };
+
 export interface TkslopperConfig {
-  controlPlaneUrl: string;
-  gatewayUrl: string;
+  controlPlane: TkslopperTarget;
+  gateway: TkslopperTarget;
   serviceCredential: string;
   artifactAlias: string;
   reviewAlias: string;
@@ -48,8 +51,6 @@ export interface TkslopperConfig {
   imageEffort?: PortableEffort;
   artifactEndpoint: TkslopperArtifactEndpoint;
   maxRequestBytes: number;
-  gateway?: Fetcher;
-  controlPlane?: Fetcher;
 }
 
 export type TkslopperConfigResult =
@@ -65,6 +66,10 @@ const MAXIMUM_REQUEST_BYTES = 10_485_760;
 const GRANT_TTL_SECONDS = 900;
 const GRANT_REFRESH_MARGIN_MS = 60_000;
 const EXCHANGE_TIMEOUT_MS = 5_000;
+// How long any request waits on a shared exchange before replacing it.
+const EXCHANGE_WAIT_MS = EXCHANGE_TIMEOUT_MS + 1_000;
+// A cached grant still this far from expiry covers a failed refresh.
+const STALE_GRANT_MARGIN_MS = 5_000;
 const GATEWAY_TIMEOUT_MS = 45_000;
 const ARTIFACT_MAX_OUTPUT_TOKENS = 32_000;
 const REVIEW_MAX_OUTPUT_TOKENS = 500;
@@ -104,26 +109,58 @@ export function portableEffort(
   }
 }
 
-function serviceUrl(value: string | undefined): string | null {
-  if (!value?.trim()) return null;
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    return null;
+/**
+ * Resolves a tkslopper Worker target. A service binding wins when present;
+ * the URL is then optional but still validated if set. tkslopper routes on the
+ * exact path, so the URL must be an HTTPS origin without a path prefix.
+ */
+function serviceTarget(
+  name: string,
+  value: string | undefined,
+  binding: Fetcher | undefined,
+): { target?: TkslopperTarget; problem?: string } {
+  const problem = `${name} must be an HTTPS origin such as https://tkslopper.example`;
+  let url: string | undefined;
+  if (value?.trim()) {
+    let parsed: URL;
+    try {
+      parsed = new URL(value.trim());
+    } catch {
+      return { problem };
+    }
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.username ||
+      parsed.password
+    )
+      return { problem };
+    url = parsed.origin;
   }
-  if (url.protocol !== "https:") return null;
-  if (url.search || url.hash || url.username || url.password) return null;
-  return url.toString().replace(/\/+$/, "");
+  if (binding) return { target: { binding } };
+  return url ? { target: { url } } : { problem };
+}
+
+function isArtifactEndpoint(value: string): value is TkslopperArtifactEndpoint {
+  return value === "responses" || value === "chat";
 }
 
 export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
   const problems: string[] = [];
-  const controlPlaneUrl = serviceUrl(env.TKSLOPPER_CONTROL_PLANE_URL);
-  if (!controlPlaneUrl)
-    problems.push("TKSLOPPER_CONTROL_PLANE_URL must be an HTTPS URL");
-  const gatewayUrl = serviceUrl(env.TKSLOPPER_GATEWAY_URL);
-  if (!gatewayUrl) problems.push("TKSLOPPER_GATEWAY_URL must be an HTTPS URL");
+  const controlPlane = serviceTarget(
+    "TKSLOPPER_CONTROL_PLANE_URL",
+    env.TKSLOPPER_CONTROL_PLANE_URL,
+    env.TKSLOPPER_CONTROL_PLANE,
+  );
+  if (controlPlane.problem) problems.push(controlPlane.problem);
+  const gateway = serviceTarget(
+    "TKSLOPPER_GATEWAY_URL",
+    env.TKSLOPPER_GATEWAY_URL,
+    env.TKSLOPPER_GATEWAY,
+  );
+  if (gateway.problem) problems.push(gateway.problem);
 
   const serviceCredential = env.TKSLOPPER_SERVICE_CREDENTIAL?.trim() ?? "";
   if (!CREDENTIAL_PATTERN.test(serviceCredential))
@@ -162,7 +199,7 @@ export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
   }
 
   const endpoint = env.TKSLOPPER_ARTIFACT_ENDPOINT?.trim() || "responses";
-  if (endpoint !== "responses" && endpoint !== "chat")
+  if (!isArtifactEndpoint(endpoint))
     problems.push("TKSLOPPER_ARTIFACT_ENDPOINT must be responses or chat");
 
   const maxRequestBytesValue = env.TKSLOPPER_MAX_REQUEST_BYTES?.trim();
@@ -178,7 +215,12 @@ export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
       `TKSLOPPER_MAX_REQUEST_BYTES must be a whole number from ${MINIMUM_REQUEST_BYTES} to ${MAXIMUM_REQUEST_BYTES}`,
     );
 
-  if (problems.length || !controlPlaneUrl || !gatewayUrl)
+  if (
+    problems.length ||
+    !controlPlane.target ||
+    !gateway.target ||
+    !isArtifactEndpoint(endpoint)
+  )
     return {
       ok: false,
       reason: `tkslopper transport is misconfigured: ${problems.join("; ")}.`,
@@ -186,19 +228,15 @@ export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
   return {
     ok: true,
     config: {
-      controlPlaneUrl,
-      gatewayUrl,
+      controlPlane: controlPlane.target,
+      gateway: gateway.target,
       serviceCredential,
       ...aliases,
       ...(efforts.artifactEffort ? { artifactEffort: efforts.artifactEffort } : {}),
       ...(efforts.reviewEffort ? { reviewEffort: efforts.reviewEffort } : {}),
       ...(efforts.imageEffort ? { imageEffort: efforts.imageEffort } : {}),
-      artifactEndpoint: endpoint as TkslopperArtifactEndpoint,
+      artifactEndpoint: endpoint,
       maxRequestBytes,
-      ...(env.TKSLOPPER_GATEWAY ? { gateway: env.TKSLOPPER_GATEWAY } : {}),
-      ...(env.TKSLOPPER_CONTROL_PLANE
-        ? { controlPlane: env.TKSLOPPER_CONTROL_PLANE }
-        : {}),
     },
   };
 }
@@ -209,9 +247,14 @@ interface Grant {
   refreshAt: number;
 }
 
+interface PendingExchange {
+  promise: Promise<Grant>;
+  startedAt: number;
+}
+
 interface GrantSlot {
   grant?: Grant;
-  pending?: Promise<Grant>;
+  pending?: PendingExchange;
 }
 
 /**
@@ -247,7 +290,7 @@ export class TkslopperError extends ModelProviderError {
 }
 
 export interface TkslopperGatewayResult {
-  body: unknown;
+  body: Record<string, unknown>;
   gatewayRequestId?: string;
 }
 
@@ -280,6 +323,18 @@ function describeFailure(error: unknown): string {
   return "failed";
 }
 
+/** Bounds how long one request waits on a possibly shared exchange. */
+function withDeadline(promise: Promise<Grant>, ms: number): Promise<Grant> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      console.error("tkslopper grant exchange wait timed out");
+      reject(new TkslopperError("Model access grant timed out", true));
+    }, Math.max(0, ms));
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 export class TkslopperClient {
   private readonly fetcher: typeof fetch;
   private readonly cache: TkslopperGrantCache;
@@ -299,7 +354,7 @@ export class TkslopperClient {
     ];
     // Keyed on the credential id so the secret is not copied into the cache.
     this.cacheKey = JSON.stringify([
-      config.controlPlaneUrl,
+      "url" in config.controlPlane ? config.controlPlane.url : "service-binding",
       CREDENTIAL_PATTERN.exec(config.serviceCredential)?.[1] ?? "",
       this.capabilities,
     ]);
@@ -361,7 +416,7 @@ export class TkslopperClient {
     }
 
     const parsed: unknown = await response.json().catch(() => undefined);
-    if (parsed === undefined || parsed === null || typeof parsed !== "object")
+    if (!isRecord(parsed))
       throw new TkslopperError(
         "Malformed gateway response",
         true,
@@ -391,12 +446,7 @@ export class TkslopperClient {
       signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
     };
     try {
-      return await this.dispatch(
-        this.config.gateway,
-        this.config.gatewayUrl,
-        path,
-        init,
-      );
+      return await this.dispatch(this.config.gateway, path, init);
     } catch (error) {
       // An aborted attempt may still have reached the provider and been
       // charged, so it is surfaced as retryable but never retried here.
@@ -409,32 +459,57 @@ export class TkslopperClient {
   }
 
   private dispatch(
-    binding: Fetcher | undefined,
-    baseUrl: string,
+    target: TkslopperTarget,
     path: string,
     init: RequestInit,
   ): Promise<Response> {
     // Service bindings route on the path only; the public URL keeps working
     // when no binding is configured.
-    if (binding)
-      return binding.fetch(new Request(`${INTERNAL_ORIGIN}${path}`, init));
-    return this.fetcher(`${baseUrl}${path}`, init);
+    if ("binding" in target)
+      return target.binding.fetch(new Request(`${INTERNAL_ORIGIN}${path}`, init));
+    return this.fetcher(`${target.url}${path}`, init);
   }
 
   private async grant(): Promise<Grant> {
     const slot = this.cache.slot(this.cacheKey);
-    if (slot.grant && this.now() < slot.grant.refreshAt) return slot.grant;
-    if (slot.pending) return slot.pending;
-    const pending = this.exchange().then((grant) => {
-      slot.grant = grant;
-      return grant;
-    });
-    slot.pending = pending;
-    const settle = () => {
-      if (slot.pending === pending) delete slot.pending;
-    };
-    pending.then(settle, settle);
-    return pending;
+    const current = slot.grant;
+    if (current && this.now() < current.refreshAt) return current;
+    let pending = slot.pending;
+    // A shared exchange belongs to the request that started it; if that
+    // request is cancelled its promise may never settle, so an exchange older
+    // than its own timeout is replaced rather than awaited.
+    if (!pending || this.now() - pending.startedAt >= EXCHANGE_WAIT_MS) {
+      const promise = this.exchange().then((grant) => {
+        slot.grant = grant;
+        return grant;
+      });
+      const started = { promise, startedAt: this.now() };
+      slot.pending = started;
+      const settle = () => {
+        if (slot.pending === started) delete slot.pending;
+      };
+      promise.then(settle, settle);
+      pending = started;
+    }
+    try {
+      return await withDeadline(
+        pending.promise,
+        pending.startedAt + EXCHANGE_WAIT_MS - this.now(),
+      );
+    } catch (error) {
+      // A control-plane blip must not fail requests while the cached grant is
+      // still valid. Rejected credentials and kill switches are not retryable
+      // and still fail.
+      if (
+        error instanceof TkslopperError &&
+        error.retryable &&
+        current &&
+        slot.grant === current &&
+        current.expiresAt - this.now() > STALE_GRANT_MARGIN_MS
+      )
+        return current;
+      throw error;
+    }
   }
 
   private invalidate(grant: Grant): void {
@@ -447,7 +522,6 @@ export class TkslopperClient {
     try {
       response = await this.dispatch(
         this.config.controlPlane,
-        this.config.controlPlaneUrl,
         "/v1/token",
         {
           method: "POST",
@@ -471,7 +545,12 @@ export class TkslopperClient {
     }
     const requestId = response.headers.get("x-tkslopper-request-id") ?? undefined;
     const body = (await response.json().catch(() => null)) as
-      | (ErrorBody & { access_token?: unknown; expires_in?: unknown })
+      | (ErrorBody & {
+          access_token?: unknown;
+          token_type?: unknown;
+          expires_in?: unknown;
+          capabilities?: unknown;
+        })
       | null;
     if (!response.ok) {
       const code =
@@ -489,6 +568,8 @@ export class TkslopperClient {
     if (
       typeof body?.access_token !== "string" ||
       !body.access_token ||
+      typeof body.token_type !== "string" ||
+      body.token_type.toLowerCase() !== "bearer" ||
       typeof body.expires_in !== "number" ||
       !Number.isFinite(body.expires_in) ||
       body.expires_in <= 0
@@ -499,6 +580,19 @@ export class TkslopperClient {
       throw new TkslopperError(
         "Malformed model access grant",
         true,
+        response.status,
+        requestId,
+      );
+    }
+    const granted = Array.isArray(body.capabilities) ? body.capabilities : [];
+    const missing = this.capabilities.filter((alias) => !granted.includes(alias));
+    if (missing.length) {
+      console.error(
+        `tkslopper grant is missing capabilities ${missing.join(", ")}${requestId ? ` (request ${requestId})` : ""}`,
+      );
+      throw new TkslopperError(
+        "Model access grant lacks a capability",
+        false,
         response.status,
         requestId,
       );
@@ -522,67 +616,35 @@ type Outcome =
   | { kind: "refused" }
   | { kind: "empty" };
 
-interface ResponsesBody {
-  id?: unknown;
-  model?: unknown;
-  status?: unknown;
-  incomplete_details?: { reason?: unknown } | null;
-  output?: unknown;
-  usage?: {
-    input_tokens?: unknown;
-    output_tokens?: unknown;
-    total_tokens?: unknown;
-  };
-}
-
-interface ChatBody {
-  id?: unknown;
-  model?: unknown;
-  choices?: {
-    message?: { content?: unknown; refusal?: unknown };
-    finish_reason?: unknown;
-  }[];
-  usage?: {
-    prompt_tokens?: unknown;
-    completion_tokens?: unknown;
-    total_tokens?: unknown;
-  };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface OutputItem {
-  type?: unknown;
-  content?: unknown;
+function record(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
 }
 
-interface OutputPart {
-  type?: unknown;
-  text?: unknown;
+function firstChoice(body: Record<string, unknown>): Record<string, unknown> {
+  return record(Array.isArray(body.choices) ? body.choices[0] : undefined);
 }
 
 /** A Responses result is complete only when every condition holds. */
-export function responsesOutcome(body: ResponsesBody): Outcome {
+export function responsesOutcome(body: Record<string, unknown>): Outcome {
   const output: unknown[] = Array.isArray(body.output) ? body.output : [];
   const parts = output
     .filter(isRecord)
-    .filter((item: OutputItem) => item.type === "message")
-    .flatMap((item: OutputItem): unknown[] =>
-      Array.isArray(item.content) ? item.content : [],
-    )
+    .filter((item) => item.type === "message")
+    .flatMap((item): unknown[] => (Array.isArray(item.content) ? item.content : []))
     .filter(isRecord);
-  if (parts.some((part: OutputPart) => part.type === "refusal"))
-    return { kind: "refused" };
+  if (parts.some((part) => part.type === "refusal")) return { kind: "refused" };
   if (body.status === "incomplete") {
-    return body.incomplete_details?.reason === "max_output_tokens"
+    return record(body.incomplete_details).reason === "max_output_tokens"
       ? { kind: "truncated" }
       : { kind: "incomplete" };
   }
   if (body.status !== "completed") return { kind: "incomplete" };
   const text = parts
-    .map((part: OutputPart) =>
+    .map((part) =>
       part.type === "output_text" && typeof part.text === "string" ? part.text : "",
     )
     .join("");
@@ -590,21 +652,23 @@ export function responsesOutcome(body: ResponsesBody): Outcome {
 }
 
 /** A Chat result is complete only when it stopped with non-empty content. */
-export function chatOutcome(body: ChatBody): Outcome {
-  const choice = body.choices?.[0];
-  const finishReason = choice?.finish_reason;
+export function chatOutcome(body: Record<string, unknown>): Outcome {
+  const choice = firstChoice(body);
+  const message = record(choice.message);
+  const finishReason = choice.finish_reason;
   if (finishReason === "content_filter") return { kind: "refused" };
-  if (typeof choice?.message?.refusal === "string" && choice.message.refusal)
+  if (typeof message.refusal === "string" && message.refusal)
     return { kind: "refused" };
   if (finishReason === "length") return { kind: "truncated" };
   if (finishReason !== "stop") return { kind: "incomplete" };
-  const content = choice?.message?.content;
-  return typeof content === "string" && content
-    ? { kind: "complete", text: content }
+  return typeof message.content === "string" && message.content
+    ? { kind: "complete", text: message.content }
     : { kind: "empty" };
 }
 
-function outcomeError(outcome: Exclude<Outcome, { kind: "complete" }>) {
+function outcomeError(
+  outcome: Exclude<Outcome, { kind: "complete" }>,
+): ModelProviderError {
   switch (outcome.kind) {
     case "truncated":
       return new ModelProviderError("Model output truncated", true);
@@ -782,7 +846,7 @@ export class TkslopperModelProvider implements ModelProvider {
       });
       throw error;
     }
-    const responseBody = result.body as ResponsesBody & ChatBody;
+    const responseBody = result.body;
     const outcome =
       endpoint === "chat"
         ? chatOutcome(responseBody)
@@ -823,7 +887,7 @@ export class TkslopperModelProvider implements ModelProvider {
       systemBytes: number;
       inputBytes: number;
       endpoint?: TkslopperArtifactEndpoint;
-      body?: ResponsesBody & ChatBody;
+      body?: Record<string, unknown>;
       gatewayRequestId?: string;
     },
   ): void {
@@ -834,17 +898,18 @@ export class TkslopperModelProvider implements ModelProvider {
     const responseId = stringOrUndefined(body?.id);
     const finishReason = body
       ? chat
-        ? stringOrUndefined(body.choices?.[0]?.finish_reason)
-        : stringOrUndefined(body.incomplete_details?.reason) ??
+        ? stringOrUndefined(firstChoice(body).finish_reason)
+        : stringOrUndefined(record(body.incomplete_details).reason) ??
           stringOrUndefined(body.status)
       : undefined;
+    const usage = record(body?.usage);
     const inputTokens = numberOrUndefined(
-      chat ? body?.usage?.prompt_tokens : body?.usage?.input_tokens,
+      chat ? usage.prompt_tokens : usage.input_tokens,
     );
     const outputTokens = numberOrUndefined(
-      chat ? body?.usage?.completion_tokens : body?.usage?.output_tokens,
+      chat ? usage.completion_tokens : usage.output_tokens,
     );
-    const totalTokens = numberOrUndefined(body?.usage?.total_tokens);
+    const totalTokens = numberOrUndefined(usage.total_tokens);
     emitOperationalTrace(trace.sink, {
       kind: "model_call",
       requestId: trace.requestId,
@@ -914,7 +979,7 @@ export class TkslopperImageSafetyInspector implements ImageSafetyInspector {
     const requestSuffix = result.gatewayRequestId
       ? ` (request ${result.gatewayRequestId})`
       : "";
-    const outcome = responsesOutcome(result.body as ResponsesBody);
+    const outcome = responsesOutcome(result.body);
     if (outcome.kind !== "complete") {
       console.error(`Image safety review was ${outcome.kind}${requestSuffix}`);
       return { status: "unavailable" };
