@@ -66,10 +66,14 @@ const MAXIMUM_REQUEST_BYTES = 10_485_760;
 const GRANT_TTL_SECONDS = 900;
 const GRANT_REFRESH_MARGIN_MS = 60_000;
 const EXCHANGE_TIMEOUT_MS = 5_000;
-// How long any request waits on a shared exchange before replacing it.
+// A shared exchange older than its own abort is replaced, and each waiter
+// allows it a further second, so a late joiner always waits at least that.
 const EXCHANGE_WAIT_MS = EXCHANGE_TIMEOUT_MS + 1_000;
 // A cached grant still this far from expiry covers a failed refresh.
 const STALE_GRANT_MARGIN_MS = 5_000;
+// After a transient refresh failure, keep the covering grant this long
+// before trying the control plane again.
+const REFRESH_BACKOFF_MS = 10_000;
 const GATEWAY_TIMEOUT_MS = 45_000;
 const ARTIFACT_MAX_OUTPUT_TOKENS = 32_000;
 const REVIEW_MAX_OUTPUT_TOKENS = 500;
@@ -139,7 +143,11 @@ function serviceTarget(
       return { problem };
     url = parsed.origin;
   }
-  if (binding) return { target: { binding } };
+  if (binding) {
+    if (typeof binding.fetch !== "function")
+      return { problem: `${name.replace(/_URL$/, "")} must be a service binding` };
+    return { target: { binding } };
+  }
   return url ? { target: { url } } : { problem };
 }
 
@@ -255,6 +263,7 @@ interface PendingExchange {
 interface GrantSlot {
   grant?: Grant;
   pending?: PendingExchange;
+  retryAfter?: number;
 }
 
 /**
@@ -474,21 +483,38 @@ export class TkslopperClient {
     const slot = this.cache.slot(this.cacheKey);
     const current = slot.grant;
     if (current && this.now() < current.refreshAt) return current;
+    if (
+      current &&
+      slot.retryAfter !== undefined &&
+      this.now() < slot.retryAfter &&
+      this.usable(current)
+    )
+      return current;
     let pending = slot.pending;
     // A shared exchange belongs to the request that started it; if that
     // request is cancelled its promise may never settle, so an exchange older
     // than its own timeout is replaced rather than awaited.
-    if (!pending || this.now() - pending.startedAt >= EXCHANGE_WAIT_MS) {
-      const promise = this.exchange().then((grant) => {
-        slot.grant = grant;
-        return grant;
-      });
-      const started = { promise, startedAt: this.now() };
+    if (!pending || this.now() - pending.startedAt >= EXCHANGE_TIMEOUT_MS) {
+      const started: PendingExchange = {
+        promise: this.exchange().then((grant) => {
+          // A replaced exchange that settles late must not displace a newer
+          // grant from its replacement.
+          if (
+            slot.pending === started ||
+            !slot.grant ||
+            grant.expiresAt > slot.grant.expiresAt
+          )
+            slot.grant = grant;
+          delete slot.retryAfter;
+          return grant;
+        }),
+        startedAt: this.now(),
+      };
       slot.pending = started;
       const settle = () => {
         if (slot.pending === started) delete slot.pending;
       };
-      promise.then(settle, settle);
+      started.promise.then(settle, settle);
       pending = started;
     }
     try {
@@ -497,6 +523,10 @@ export class TkslopperClient {
         pending.startedAt + EXCHANGE_WAIT_MS - this.now(),
       );
     } catch (error) {
+      // Another request may have cached a fresh grant while this one waited.
+      const latest = slot.grant;
+      if (latest && latest !== current && this.now() < latest.refreshAt)
+        return latest;
       // A control-plane blip must not fail requests while the cached grant is
       // still valid. Rejected credentials and kill switches are not retryable
       // and still fail.
@@ -504,12 +534,18 @@ export class TkslopperClient {
         error instanceof TkslopperError &&
         error.retryable &&
         current &&
-        slot.grant === current &&
-        current.expiresAt - this.now() > STALE_GRANT_MARGIN_MS
-      )
+        latest === current &&
+        this.usable(current)
+      ) {
+        slot.retryAfter = this.now() + REFRESH_BACKOFF_MS;
         return current;
+      }
       throw error;
     }
+  }
+
+  private usable(grant: Grant): boolean {
+    return grant.expiresAt - this.now() > STALE_GRANT_MARGIN_MS;
   }
 
   private invalidate(grant: Grant): void {
@@ -568,8 +604,6 @@ export class TkslopperClient {
     if (
       typeof body?.access_token !== "string" ||
       !body.access_token ||
-      typeof body.token_type !== "string" ||
-      body.token_type.toLowerCase() !== "bearer" ||
       typeof body.expires_in !== "number" ||
       !Number.isFinite(body.expires_in) ||
       body.expires_in <= 0
@@ -580,6 +614,20 @@ export class TkslopperClient {
       throw new TkslopperError(
         "Malformed model access grant",
         true,
+        response.status,
+        requestId,
+      );
+    }
+    if (
+      typeof body.token_type !== "string" ||
+      body.token_type.toLowerCase() !== "bearer"
+    ) {
+      console.error(
+        `tkslopper grant exchange returned an unsupported token type${requestId ? ` (request ${requestId})` : ""}`,
+      );
+      throw new TkslopperError(
+        "Unsupported model access grant token type",
+        false,
         response.status,
         requestId,
       );

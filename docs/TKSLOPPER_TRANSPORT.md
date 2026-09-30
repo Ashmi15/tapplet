@@ -111,9 +111,12 @@ Tapplet does not create any of this; tkslopper operators set it up per stage.
    If p95 for generate, revise or repair is near 40 seconds, agree a longer
    envelope with the operators first: raise the route deadline and Tapplet's
    abort together, keeping the route deadline below Tapplet's abort. Keep the
-   whole request inside the iPad's 150-second timeout: one generation can make
-   a grant exchange (5 s) plus up to three model calls (generate and two
-   repairs), so the per-call abort should stay at or below about 45 seconds.
+   whole request inside the iPad's 150-second timeout. In the common case one
+   generation makes up to three model calls (generate and two repairs) behind
+   a cached grant, so 45 seconds per call just fits. A grant refresh (up to
+   6 seconds per call) or the single 401 retry (another exchange and call) can
+   push the worst case past 150 seconds, so if p95 is high, keep route
+   deadlines well under 40 seconds rather than raising Tapplet's abort.
 2. Store the credential for the target stage:
    `npx wrangler secret put TKSLOPPER_SERVICE_CREDENTIAL --profile tinkertanker`.
 3. Set the URLs and aliases. If full canonical images should be reviewed, ask

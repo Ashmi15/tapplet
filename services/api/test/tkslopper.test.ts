@@ -303,6 +303,12 @@ describe("tkslopper configuration", () => {
         tkEnv({ TKSLOPPER_GATEWAY_URL: "http://wrong", TKSLOPPER_GATEWAY: binding }),
       ).ok,
     ).toBe(false);
+    const mistyped = readTkslopperConfig(
+      tkEnv({ TKSLOPPER_CONTROL_PLANE: "control" as unknown as Fetcher }),
+    );
+    expect(mistyped.ok ? "" : mistyped.reason).toContain(
+      "TKSLOPPER_CONTROL_PLANE must be a service binding",
+    );
   });
 });
 
@@ -780,10 +786,33 @@ describe("tkslopper grant cache", () => {
     now += 850_000;
     await expect(p.generate(brief, [])).resolves.toEqual({ html });
     expect(g.calls[1]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}1`);
+    now += 11_000;
     const denied = await rejection(p.generate(brief, []));
     expect(denied.retryable).toBe(false);
     expect(g.exchanges).toHaveLength(3);
     expect(g.calls).toHaveLength(2);
+  });
+
+  it("backs off refreshing for 10 s after a transient failure", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let now = 1_000_000;
+    const g = gateway(
+      Array.from({ length: 4 }, () => responsesResponse()),
+      (count) => (count === 1 ? grantResponse(1) : errorResponse(503, "internal_error")),
+    );
+    const p = provider(g, {}, { now: () => now });
+    await p.generate(brief, []);
+    now += 850_000;
+    await p.generate(brief, []);
+    now += 9_000;
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(2);
+    now += 2_000;
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(3);
+    expect(g.calls.map((call) => call.headers.authorization)).toEqual(
+      Array(4).fill(`Bearer ${ACCESS_TOKEN_PREFIX}1`),
+    );
   });
 
   it("does not use a grant within 5 s of expiry after a failed refresh", async () => {
@@ -804,18 +833,24 @@ describe("tkslopper grant cache", () => {
     try {
       vi.spyOn(console, "error").mockImplementation(() => undefined);
       let now = 1_000_000;
-      const g = gateway([responsesResponse()], (count) =>
+      const g = gateway([responsesResponse(), responsesResponse()], (count) =>
         count === 1 ? new Promise<Response>(() => undefined) : grantResponse(count),
       );
       const p = provider(g, {}, { now: () => now });
       const stuck = p.generate(brief, []);
-      const stuckError = rejection(stuck);
       await vi.advanceTimersByTimeAsync(0);
       now += 6_000;
       await expect(p.generate(brief, [])).resolves.toEqual({ html });
       expect(g.exchanges).toHaveLength(2);
+      // The stuck waiter's deadline fires and it uses the replacement grant.
       await vi.advanceTimersByTimeAsync(6_000);
-      const error = await stuckError;
+      await expect(stuck).resolves.toEqual({ html });
+      expect(g.calls[1]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}2`);
+
+      const lone = gateway([], () => new Promise<Response>(() => undefined));
+      const waiting = rejection(provider(lone, {}, { now: () => now }).generate(brief, []));
+      await vi.advanceTimersByTimeAsync(6_000);
+      const error = await waiting;
       expect(error.message).toBe("Model access grant timed out");
       expect(error.retryable).toBe(true);
     } finally {
@@ -861,8 +896,8 @@ describe("tkslopper grant cache", () => {
     [
       "a non-Bearer token",
       () => Response.json({ access_token: "t", token_type: "MAC", expires_in: 900, capabilities: [ARTIFACT, REVIEW, IMAGE] }),
-      "Malformed model access grant",
-      true,
+      "Unsupported model access grant token type",
+      false,
     ],
   ])("rejects a grant with %s", async (_name, reply, messageText, retryable) => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
