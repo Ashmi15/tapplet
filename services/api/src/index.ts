@@ -3,7 +3,12 @@ import { createStudioApp } from "./app";
 import { FAVICON_SVG, publicationErrorResponse } from "./brand";
 import { CloudflareAssetStore } from "./assets";
 import { readConfig, type StudioEnv } from "./env";
+import type { ImageSafetyInspector } from "./imageSafety";
 import { OpenCodeGoImageSafetyInspector } from "./imageSafety";
+import {
+  createTkslopperImageSafetyInspector,
+  inferenceTransport,
+} from "./ai/tkslopper";
 import { CloudflareImageNormalizer } from "./imageNormalizer";
 import { consoleOperationalTraceSink } from "./operationalTrace";
 import { D1StudioRepository } from "./storage/d1Repository";
@@ -37,12 +42,7 @@ export default {
         env.DB,
         env.MEDIA,
         new CloudflareImageNormalizer(env.IMAGES),
-        env.OPENCODE_API_KEY
-          ? new OpenCodeGoImageSafetyInspector({
-              apiKey: env.OPENCODE_API_KEY,
-              model: env.IMAGE_SAFETY_MODEL,
-            })
-          : undefined,
+        createImageSafetyInspector(env),
       ),
       traceSink: consoleOperationalTraceSink,
     }).fetch(request);
@@ -80,6 +80,22 @@ export default {
     ]);
   },
 } satisfies ExportedHandler<StudioEnv>;
+
+export function createImageSafetyInspector(
+  env: StudioEnv,
+): ImageSafetyInspector | undefined {
+  const transport = inferenceTransport(env);
+  // A misconfigured or unknown transport leaves review unavailable rather than
+  // silently falling back to the direct provider.
+  if (transport === "tkslopper") return createTkslopperImageSafetyInspector(env);
+  if (transport !== "direct") return undefined;
+  return env.OPENCODE_API_KEY
+    ? new OpenCodeGoImageSafetyInspector({
+        apiKey: env.OPENCODE_API_KEY,
+        model: env.IMAGE_SAFETY_MODEL,
+      })
+    : undefined;
+}
 
 export function injectPublicHtml(source: string, slug: string): string {
   const report = `<script ${PUBLIC_REPORT_MARKER}>window.addEventListener('DOMContentLoaded',()=>{const b=document.createElement('button');b.textContent='Report this activity';b.setAttribute('aria-label','Report this activity');Object.assign(b.style,{position:'fixed',right:'12px',bottom:'12px',zIndex:'2147483647'});b.onclick=()=>{const reasons=['inappropriate','personal-data','copyright','accessibility','other'];const reason=prompt('Reason: inappropriate, personal-data, copyright, accessibility, or other','other');if(!reason||!reasons.includes(reason))return;fetch('/v1/publications/${slug}/reports',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({reason})}).then(response=>{if(!response.ok)throw new Error();b.textContent='Report sent'}).catch(()=>{b.textContent='Report failed — try again'})};document.body.append(b)})</script>`;

@@ -22,24 +22,31 @@ export type ReasoningEffort =
   | "max"
   | "xhigh";
 
-class UnavailableModelProvider implements ModelProvider {
+export class UnavailableModelProvider implements ModelProvider {
   readonly name = "unavailable";
 
   constructor(private readonly reason: string) {}
 
   generate(): Promise<never> {
-    return Promise.reject(new ModelProviderError(this.reason, true));
+    return this.unavailable();
   }
 
   revise(): Promise<never> {
-    return Promise.reject(new ModelProviderError(this.reason, true));
+    return this.unavailable();
   }
 
   repair(): Promise<never> {
-    return Promise.reject(new ModelProviderError(this.reason, true));
+    return this.unavailable();
   }
 
   moderate(): Promise<never> {
+    return this.unavailable();
+  }
+
+  // The API maps this to a generic 503, so the reason is logged here for
+  // operators; it names configuration keys, never their values.
+  private unavailable(): Promise<never> {
+    console.error(`Model provider unavailable: ${this.reason}`);
     return Promise.reject(new ModelProviderError(this.reason, true));
   }
 }

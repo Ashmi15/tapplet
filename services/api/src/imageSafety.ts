@@ -13,7 +13,7 @@ interface OpenCodeGoImageSafetyInspectorOptions {
   fetch?: typeof fetch;
 }
 
-const QUESTION = `Classify this teacher-uploaded classroom image.
+export const IMAGE_SAFETY_QUESTION = `Classify this teacher-uploaded classroom image.
 Reply on the first line with exactly SAFE or UNSAFE, then one short reason.
 Mark UNSAFE if it contains any visible person or face, nudity or sexual content, graphic injury,
 weapons or illegal drugs, hateful symbols, or visible personal information such as a pupil name,
@@ -41,10 +41,10 @@ export class OpenCodeGoImageSafetyInspector implements ImageSafetyInspector {
           input: [{
             role: 'user',
             content: [
-              { type: 'input_text', text: QUESTION },
+              { type: 'input_text', text: IMAGE_SAFETY_QUESTION },
               {
                 type: 'input_image',
-                image_url: `data:${mediaType};base64,${base64(bytes)}`,
+                image_url: imageDataUrl(bytes, mediaType),
               },
             ],
           }],
@@ -81,18 +81,33 @@ export class OpenCodeGoImageSafetyInspector implements ImageSafetyInspector {
       console.error(`Image safety review returned no answer: ${serialiseDiagnostic(result)}`);
       return { status: 'unavailable' };
     }
-    if (/^SAFE\b/i.test(answer)) return { status: 'clear' };
-    if (/^UNSAFE\b/i.test(answer)) {
-      const reason = answer
-        .replace(/^UNSAFE\b[\s:.-]*/i, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 240);
-      return { status: 'flagged', ...(reason ? { reason } : {}) };
-    }
+    const review = parseImageSafetyAnswer(answer);
+    if (review) return review;
     console.error(`Image safety review returned an invalid answer: ${serialiseDiagnostic(result)}`);
     return { status: 'unavailable' };
   }
+}
+
+/**
+ * Interprets the first-line SAFE/UNSAFE verdict. Returns null when the answer
+ * is not a valid verdict so each inspector can report it as unavailable.
+ */
+export function parseImageSafetyAnswer(answer: string): ImageSafetyReview | null {
+  const trimmed = answer.trim();
+  if (/^SAFE\b/i.test(trimmed)) return { status: 'clear' };
+  if (/^UNSAFE\b/i.test(trimmed)) {
+    const reason = trimmed
+      .replace(/^UNSAFE\b[\s:.-]*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 240);
+    return { status: 'flagged', ...(reason ? { reason } : {}) };
+  }
+  return null;
+}
+
+export function imageDataUrl(bytes: Uint8Array, mediaType: string): string {
+  return `data:${mediaType};base64,${base64(bytes)}`;
 }
 
 function serialiseDiagnostic(value: unknown): string {
