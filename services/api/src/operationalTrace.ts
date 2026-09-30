@@ -9,6 +9,7 @@ export interface ModelCallTrace {
   configuredModel: string;
   resolvedModel?: string;
   responseId?: string;
+  gatewayRequestId?: string;
   status: "success" | "error";
   durationMs: number;
   systemBytes: number;

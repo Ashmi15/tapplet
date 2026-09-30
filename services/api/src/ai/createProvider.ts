@@ -22,7 +22,7 @@ export type ReasoningEffort =
   | "max"
   | "xhigh";
 
-class UnavailableModelProvider implements ModelProvider {
+export class UnavailableModelProvider implements ModelProvider {
   readonly name = "unavailable";
 
   constructor(private readonly reason: string) {}

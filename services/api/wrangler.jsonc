@@ -39,6 +39,25 @@
     "AI_MODEL": "muse-spark-1.2-contributor",
     "AI_BASE_URL": "https://api.deepseek.com",
     "IMAGE_SAFETY_MODEL": "gpt-5.6-luna",
+    // "direct" keeps the provider settings above. "tkslopper" routes every
+    // model call through the tkslopper gateway and needs the values below plus
+    // the TKSLOPPER_SERVICE_CREDENTIAL secret (wrangler secret put). Operators
+    // set the URLs and aliases for each stage before switching transport.
+    // Optional service bindings named TKSLOPPER_GATEWAY and
+    // TKSLOPPER_CONTROL_PLANE (same Cloudflare account) take precedence over
+    // the URLs when present.
+    "INFERENCE_TRANSPORT": "direct",
+    "TKSLOPPER_CONTROL_PLANE_URL": "",
+    "TKSLOPPER_GATEWAY_URL": "",
+    "TKSLOPPER_ARTIFACT_ALIAS": "",
+    "TKSLOPPER_REVIEW_ALIAS": "",
+    "TKSLOPPER_IMAGE_ALIAS": "",
+    "TKSLOPPER_ARTIFACT_EFFORT": "high",
+    "TKSLOPPER_REVIEW_EFFORT": "low",
+    "TKSLOPPER_IMAGE_EFFORT": "omit",
+    "TKSLOPPER_ARTIFACT_ENDPOINT": "responses",
+    // Must match the tkslopper environment's max_request_bytes.
+    "TKSLOPPER_MAX_REQUEST_BYTES": "1048576",
     "PUBLIC_PLAYER_ORIGIN": "https://classroom-widgets-studio-api.tinkertanker.workers.dev",
     "ALLOWED_ORIGINS": "https://classroom-widgets-studio-api.tinkertanker.workers.dev",
     "DAILY_GENERATION_LIMIT": "20",
