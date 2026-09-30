@@ -161,7 +161,10 @@ them.
    `DEVICE_TOKEN_SIGNING_SECRET` rotation remains the last resort and invalidates
    every pilot iPad. Confirm the active provider credential (`AI_API_KEY`,
    `OPENCODE_API_KEY`, or `OPENROUTER_API_KEY`) is configured. Also confirm
-   `OPENCODE_API_KEY` is configured for uploaded-image safety review.
+   `OPENCODE_API_KEY` is configured for uploaded-image safety review. If
+   `INFERENCE_TRANSPORT` is `tkslopper`, confirm `TKSLOPPER_SERVICE_CREDENTIAL`
+   and the aliases instead (see
+   [`TKSLOPPER_TRANSPORT.md`](TKSLOPPER_TRANSPORT.md)).
 4. Provision one shared code for each class with an explicit reviewed expiry:
    `npm run class-access:provision -- 1234 30 2026-08-24T00:00:00.000Z`,
    replacing every example argument (including the expiry) with workshop
@@ -282,6 +285,11 @@ one is current.
   request then fails closed. Stored HTML publications remain readable.
   Publication review outages are warning-only, so revoke affected links
   separately if new publishing must also stop.
+- If `INFERENCE_TRANSPORT` is `tkslopper`, the admin override is inactive.
+  Stop generation with the tkslopper kill switch or by revoking the service
+  credential, or return to the direct providers by setting
+  `INFERENCE_TRANSPORT=direct` and redeploying. See
+  [`TKSLOPPER_TRANSPORT.md`](TKSLOPPER_TRANSPORT.md).
 - To remove one unsafe tapplet, revoke only its validated slug as above.
 - To roll back a bad Worker deployment, inspect the recent deployment list with
   `npx wrangler deployments list --profile tinkertanker`, then run

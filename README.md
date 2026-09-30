@@ -69,6 +69,11 @@ and OpenRouter); this can increase
 latency and token cost. Uploaded-image safety review uses `gpt-5.6-luna`
 through OpenCode Go with reasoning disabled and requires `OPENCODE_API_KEY`.
 
+Setting `INFERENCE_TRANSPORT=tkslopper` instead routes every model call,
+including image review, through Tinkertanker's tkslopper gateway using
+capability aliases; the default `direct` keeps the providers above. See
+[`docs/TKSLOPPER_TRANSPORT.md`](docs/TKSLOPPER_TRANSPORT.md).
+
 Useful commands are `api:dev`, `api:build`, `api:test`, `api:typecheck`, `api:db:migrate:local`, `examples:validate`, `examples:package`, `examples:import`, `eval:artifacts`, `eval:model`, `eval:model-moderation`, `verify:live`, and `class-access:provision`.
 
 Run all offline repository verification with:
