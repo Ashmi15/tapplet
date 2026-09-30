@@ -114,8 +114,8 @@ Tapplet does not create any of this; tkslopper operators set it up per stage.
    the operators to raise the environment's `max_request_bytes` to at least
    3,145,728 and set `TKSLOPPER_MAX_REQUEST_BYTES` to match; with the 1 MiB
    default, JPEGs above roughly 780 KB return "review unavailable". Then set
-   `INFERENCE_TRANSPORT=tkslopper` in a non-production environment and deploy. Run the live flow, including an image
-   upload and a publication.
+   `INFERENCE_TRANSPORT=tkslopper` in a non-production environment and
+   deploy. Run the live flow, including an image upload and a publication.
 4. Repeat as a production canary. Keep the direct provider secrets in place
    until the canary is accepted.
 5. To roll back, set `INFERENCE_TRANSPORT=direct` and redeploy. Tapplet never
@@ -124,5 +124,6 @@ Tapplet does not create any of this; tkslopper operators set it up per stage.
 
 For a local transport smoke test, bind the local tkslopper dev Workers as the
 `TKSLOPPER_GATEWAY` and `TKSLOPPER_CONTROL_PLANE` service bindings (the URL
-variables must still be HTTPS values). The dev gateway's fixture route returns the plain text `fixture response`, which is not JSON,
-so it exercises authentication and transport only, not artifact semantics.
+variables must still be HTTPS values). The dev gateway's fixture route returns
+the plain text `fixture response`, which is not JSON, so it exercises
+authentication and transport only, not artifact semantics.
