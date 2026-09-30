@@ -32,7 +32,6 @@ import { ModelProviderError } from "./provider";
 // service credential for a short-lived grant on the control plane, then calls
 // the gateway's narrow OpenAI-compatible subset with capability aliases.
 
-export type InferenceTransport = "direct" | "tkslopper";
 export type PortableEffort = "low" | "medium" | "high";
 export type TkslopperArtifactEndpoint = "responses" | "chat";
 export type TkslopperOperation = ModelOperation | "image_review";
@@ -57,6 +56,8 @@ export type TkslopperConfigResult =
   | { ok: true; config: TkslopperConfig }
   | { ok: false; reason: string };
 
+// Mirrors tkslopper's opaque credential format: tksvc_<id>_<secret>.
+const CREDENTIAL_PATTERN = /^tksvc_([A-Za-z0-9-]{8,64})_[A-Za-z0-9_-]{16,128}$/;
 const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
 const MINIMUM_REQUEST_BYTES = 1_024;
@@ -111,12 +112,7 @@ function serviceUrl(value: string | undefined): string | null {
   } catch {
     return null;
   }
-  // Loopback HTTP is allowed only so a local tkslopper dev stack can be used
-  // for transport smoke tests; every deployed URL must use HTTPS.
-  const loopback =
-    url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-  if (url.protocol !== "https:" && !loopback) return null;
+  if (url.protocol !== "https:") return null;
   if (url.search || url.hash || url.username || url.password) return null;
   return url.toString().replace(/\/+$/, "");
 }
@@ -130,7 +126,7 @@ export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
   if (!gatewayUrl) problems.push("TKSLOPPER_GATEWAY_URL must be an HTTPS URL");
 
   const serviceCredential = env.TKSLOPPER_SERVICE_CREDENTIAL?.trim() ?? "";
-  if (!/^tksvc_[A-Za-z0-9-]+_\S+$/.test(serviceCredential))
+  if (!CREDENTIAL_PATTERN.test(serviceCredential))
     problems.push(
       "TKSLOPPER_SERVICE_CREDENTIAL must be a tksvc_ service credential secret",
     );
@@ -210,6 +206,7 @@ export function readTkslopperConfig(env: StudioEnv): TkslopperConfigResult {
 interface Grant {
   accessToken: string;
   expiresAt: number;
+  refreshAt: number;
 }
 
 interface GrantSlot {
@@ -232,10 +229,6 @@ export class TkslopperGrantCache {
       this.slots.set(key, slot);
     }
     return slot;
-  }
-
-  clear(): void {
-    this.slots.clear();
   }
 }
 
@@ -273,6 +266,11 @@ function retryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/** Console detail for a transport failure; never part of a thrown error. */
+function failureDetail(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 function describeFailure(error: unknown): string {
   if (error instanceof Error) {
     if (error.name === "TimeoutError" || error.name === "AbortError")
@@ -283,7 +281,7 @@ function describeFailure(error: unknown): string {
 }
 
 export class TkslopperClient {
-  private readonly request: typeof fetch;
+  private readonly fetcher: typeof fetch;
   private readonly cache: TkslopperGrantCache;
   private readonly now: () => number;
   private readonly capabilities: string[];
@@ -293,15 +291,16 @@ export class TkslopperClient {
     private readonly config: TkslopperConfig,
     options: TkslopperClientOptions = {},
   ) {
-    this.request = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.cache = options.grantCache ?? sharedGrantCache;
     this.now = options.now ?? Date.now;
     this.capabilities = [
       ...new Set([config.artifactAlias, config.reviewAlias, config.imageAlias]),
     ];
+    // Keyed on the credential id so the secret is not copied into the cache.
     this.cacheKey = JSON.stringify([
       config.controlPlaneUrl,
-      config.serviceCredential,
+      CREDENTIAL_PATTERN.exec(config.serviceCredential)?.[1] ?? "",
       this.capabilities,
     ]);
   }
@@ -311,7 +310,7 @@ export class TkslopperClient {
    * call; a 401 is the only failure that is retried, once, with a new grant
    * and a new idempotency key because it is rejected before dispatch.
    */
-  async post(
+  async request(
     path: "/v1/responses" | "/v1/chat/completions",
     body: Readonly<Record<string, unknown>>,
     operation: TkslopperOperation,
@@ -328,6 +327,10 @@ export class TkslopperClient {
     let response = await this.send(path, serialised, operation, grant);
     if (response.status === 401) {
       this.invalidate(grant);
+      const rejectedId = response.headers.get("x-tkslopper-request-id");
+      console.error(
+        `tkslopper ${operation} grant rejected${rejectedId ? ` (request ${rejectedId})` : ""}; re-exchanging once`,
+      );
       await response.body?.cancel();
       grant = await this.grant();
       response = await this.send(path, serialised, operation, grant);
@@ -397,7 +400,7 @@ export class TkslopperClient {
     } catch (error) {
       // An aborted attempt may still have reached the provider and been
       // charged, so it is surfaced as retryable but never retried here.
-      console.error(`tkslopper ${operation} request ${describeFailure(error)}`);
+      console.error(`tkslopper ${operation} request failed: ${failureDetail(error)}`);
       throw new TkslopperError(
         `Model request ${describeFailure(error)}`,
         true,
@@ -415,13 +418,12 @@ export class TkslopperClient {
     // when no binding is configured.
     if (binding)
       return binding.fetch(new Request(`${INTERNAL_ORIGIN}${path}`, init));
-    return this.request(`${baseUrl}${path}`, init);
+    return this.fetcher(`${baseUrl}${path}`, init);
   }
 
   private async grant(): Promise<Grant> {
     const slot = this.cache.slot(this.cacheKey);
-    if (slot.grant && slot.grant.expiresAt - this.now() > GRANT_REFRESH_MARGIN_MS)
-      return slot.grant;
+    if (slot.grant && this.now() < slot.grant.refreshAt) return slot.grant;
     if (slot.pending) return slot.pending;
     const pending = this.exchange().then((grant) => {
       slot.grant = grant;
@@ -461,7 +463,7 @@ export class TkslopperClient {
         },
       );
     } catch (error) {
-      console.error(`tkslopper grant exchange ${describeFailure(error)}`);
+      console.error(`tkslopper grant exchange failed: ${failureDetail(error)}`);
       throw new TkslopperError(
         `Model access grant ${describeFailure(error)}`,
         true,
@@ -501,9 +503,14 @@ export class TkslopperClient {
         requestId,
       );
     }
+    const lifetime = body.expires_in * 1_000;
+    const expiresAt = this.now() + lifetime;
+    // Refresh a minute early, or halfway through a grant shorter than two
+    // minutes, so a short environment TTL cannot force an exchange per call.
     return {
       accessToken: body.access_token,
-      expiresAt: this.now() + body.expires_in * 1_000,
+      expiresAt,
+      refreshAt: expiresAt - Math.min(GRANT_REFRESH_MARGIN_MS, lifetime / 2),
     };
   }
 }
@@ -542,6 +549,10 @@ interface ChatBody {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 interface OutputItem {
   type?: unknown;
   content?: unknown;
@@ -554,13 +565,16 @@ interface OutputPart {
 
 /** A Responses result is complete only when every condition holds. */
 export function responsesOutcome(body: ResponsesBody): Outcome {
-  const messages = (Array.isArray(body.output) ? body.output : []).filter(
-    (item: OutputItem) => item?.type === "message",
-  ) as OutputItem[];
-  const parts = messages.flatMap((item) =>
-    Array.isArray(item.content) ? (item.content as OutputPart[]) : [],
-  );
-  if (parts.some((part) => part?.type === "refusal")) return { kind: "refused" };
+  const output: unknown[] = Array.isArray(body.output) ? body.output : [];
+  const parts = output
+    .filter(isRecord)
+    .filter((item: OutputItem) => item.type === "message")
+    .flatMap((item: OutputItem): unknown[] =>
+      Array.isArray(item.content) ? item.content : [],
+    )
+    .filter(isRecord);
+  if (parts.some((part: OutputPart) => part.type === "refusal"))
+    return { kind: "refused" };
   if (body.status === "incomplete") {
     return body.incomplete_details?.reason === "max_output_tokens"
       ? { kind: "truncated" }
@@ -568,10 +582,9 @@ export function responsesOutcome(body: ResponsesBody): Outcome {
   }
   if (body.status !== "completed") return { kind: "incomplete" };
   const text = parts
-    .filter(
-      (part) => part?.type === "output_text" && typeof part.text === "string",
+    .map((part: OutputPart) =>
+      part.type === "output_text" && typeof part.text === "string" ? part.text : "",
     )
-    .map((part) => part.text as string)
     .join("");
   return text ? { kind: "complete", text } : { kind: "empty" };
 }
@@ -754,7 +767,7 @@ export class TkslopperModelProvider implements ModelProvider {
     };
     let result: TkslopperGatewayResult;
     try {
-      result = await this.client.post(
+      result = await this.client.request(
         endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses",
         body,
         operation,
@@ -871,7 +884,7 @@ export class TkslopperImageSafetyInspector implements ImageSafetyInspector {
   async inspect(bytes: Uint8Array, mediaType: string): Promise<ImageSafetyReview> {
     let result: TkslopperGatewayResult;
     try {
-      result = await this.client.post(
+      result = await this.client.request(
         "/v1/responses",
         {
           model: this.config.imageAlias,
@@ -925,9 +938,14 @@ export function createTkslopperModelProvider(
 export function createTkslopperImageSafetyInspector(
   env: StudioEnv,
   options: TkslopperClientOptions = {},
-): ImageSafetyInspector | undefined {
+): ImageSafetyInspector {
   const result = readTkslopperConfig(env);
-  return result.ok
-    ? new TkslopperImageSafetyInspector(result.config, options)
-    : undefined;
+  if (result.ok) return new TkslopperImageSafetyInspector(result.config, options);
+  const reason = result.reason;
+  return {
+    async inspect(): Promise<ImageSafetyReview> {
+      console.error(`Image safety review unavailable: ${reason}`);
+      return { status: "unavailable" };
+    },
+  };
 }

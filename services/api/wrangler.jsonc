@@ -56,7 +56,8 @@
     "TKSLOPPER_REVIEW_EFFORT": "low",
     "TKSLOPPER_IMAGE_EFFORT": "omit",
     "TKSLOPPER_ARTIFACT_ENDPOINT": "responses",
-    // Must match the tkslopper environment's max_request_bytes.
+    // Must not exceed the gateway's effective body limit: the smaller of its
+    // MAX_BODY_BYTES and the environment's max_request_bytes.
     "TKSLOPPER_MAX_REQUEST_BYTES": "1048576",
     "PUBLIC_PLAYER_ORIGIN": "https://classroom-widgets-studio-api.tinkertanker.workers.dev",
     "ALLOWED_ORIGINS": "https://classroom-widgets-studio-api.tinkertanker.workers.dev",

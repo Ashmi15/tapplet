@@ -37,7 +37,7 @@ import {
 const CONTROL = "https://control.tkslopper.test";
 const GATEWAY = "https://gateway.tkslopper.test";
 const CREDENTIAL_SECRET = "credential-secret-value-0123456789";
-const CREDENTIAL = `tksvc_cred01_${CREDENTIAL_SECRET}`;
+const CREDENTIAL = `tksvc_cred0001abcd_${CREDENTIAL_SECRET}`;
 const ACCESS_TOKEN_PREFIX = "access-token-secret-";
 const ARTIFACT = "tapplet.artifact.v1";
 const REVIEW = "tapplet.review.v1";
@@ -81,6 +81,7 @@ function config(values: Partial<StudioEnv> = {}): TkslopperConfig {
 
 interface Call {
   url: string;
+  signal: AbortSignal | null | undefined;
   headers: Record<string, string>;
   body: Record<string, unknown>;
 }
@@ -111,6 +112,7 @@ function gateway(
     });
     const call = {
       url: request.url,
+      signal: init ? init.signal : request.signal,
       headers,
       body: (await request.json()) as Record<string, unknown>,
     };
@@ -281,16 +283,11 @@ describe("tkslopper configuration", () => {
     expect(result.reason).not.toContain("tkgk_group_key");
   });
 
-  it("allows loopback HTTP only for local smoke tests", () => {
+  it("requires HTTPS even for loopback URLs and trims trailing slashes", () => {
     expect(
-      config({
-        TKSLOPPER_CONTROL_PLANE_URL: "http://localhost:8788/",
-        TKSLOPPER_GATEWAY_URL: "http://127.0.0.1:8787",
-      }),
-    ).toMatchObject({
-      controlPlaneUrl: "http://localhost:8788",
-      gatewayUrl: "http://127.0.0.1:8787",
-    });
+      readTkslopperConfig(tkEnv({ TKSLOPPER_GATEWAY_URL: "http://localhost:8787" })).ok,
+    ).toBe(false);
+    expect(config({ TKSLOPPER_GATEWAY_URL: `${GATEWAY}/` }).gatewayUrl).toBe(GATEWAY);
   });
 });
 
@@ -663,6 +660,38 @@ describe("tkslopper errors", () => {
     expect(aborted.calls).toHaveLength(1);
   });
 
+  it("drops the replacement grant when the retry after a 401 is forbidden", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const g = gateway([
+      errorResponse(401, "authentication_failed"),
+      errorResponse(403, "authorization_failed"),
+      responsesResponse(),
+    ]);
+    const p = provider(g);
+    expect((await rejection(p.generate(brief, []))).retryable).toBe(false);
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(3);
+    expect(g.calls[2]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}3`);
+  });
+
+  it.each([
+    ["non-JSON", () => new Response("fixture response", { status: 200 })],
+    ["a JSON scalar", () => Response.json("fixture response")],
+  ])("treats a %s success body as a retryable malformed response", async (_name, reply) => {
+    const g = gateway([reply]);
+    const error = await rejection(provider(g).generate(brief, []));
+    expect(error.message).toBe("Malformed gateway response");
+    expect(error.retryable).toBe(true);
+    expect(g.calls).toHaveLength(1);
+  });
+
+  it("attaches an abort signal to the exchange and every gateway call", async () => {
+    const g = gateway([responsesResponse()]);
+    await provider(g).generate(brief, []);
+    expect(g.exchanges[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(g.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("uses a fresh idempotency key for every repair", async () => {
     const invalid = JSON.stringify({ html: "<p>Not a document</p>" });
     const g = gateway([
@@ -699,6 +728,22 @@ describe("tkslopper grant cache", () => {
     await p.generate(brief, []);
     expect(g.exchanges).toHaveLength(2);
     expect(g.calls[2]?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN_PREFIX}2`);
+  });
+
+  it("reuses a short grant until halfway through its lifetime", async () => {
+    let now = 1_000_000;
+    const g = gateway(
+      [responsesResponse(), responsesResponse(), responsesResponse()],
+      (count) => grantResponse(count, 60),
+    );
+    const p = provider(g, {}, { now: () => now });
+    await p.generate(brief, []);
+    now += 29_000;
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(1);
+    now += 2_000;
+    await p.generate(brief, []);
+    expect(g.exchanges).toHaveLength(2);
   });
 
   it("shares one in-flight exchange between concurrent requests", async () => {
@@ -905,6 +950,26 @@ describe("tkslopper traces and secrets", () => {
     });
   });
 
+  it("maps Chat finish reason and usage into model_call traces", async () => {
+    const sink = new MemoryOperationalTraceSink();
+    const g = gateway([chatResponse({ content: artifactJson, finish: "stop" }, "req_chat")]);
+    await provider(g, { TKSLOPPER_ARTIFACT_ENDPOINT: "chat" }).generate(brief, [], {
+      requestId: "tapplet-request",
+      sink,
+    });
+    expect(sink.events[0]).toMatchObject({
+      configuredModel: ARTIFACT,
+      resolvedModel: ARTIFACT,
+      responseId: "chatcmpl_1",
+      gatewayRequestId: "req_chat",
+      status: "success",
+      finishReason: "stop",
+      inputTokens: 5,
+      outputTokens: 6,
+      totalTokens: 11,
+    });
+  });
+
   it("never exposes the credential or access token in traces, logs or errors", async () => {
     const sink = new MemoryOperationalTraceSink();
     const trace = { requestId: "tapplet-request", sink };
@@ -942,6 +1007,7 @@ describe("tkslopper traces and secrets", () => {
     expect(sink.events.length).toBeGreaterThan(0);
     expect(exposed).not.toContain(CREDENTIAL_SECRET);
     expect(exposed).not.toContain("tksvc_");
+    expect(exposed).not.toContain("cred0001abcd");
     expect(exposed).not.toContain(ACCESS_TOKEN_PREFIX);
   });
 });
@@ -982,7 +1048,7 @@ describe("tkslopper wiring", () => {
       DB: database,
       ADMIN_TOKEN: adminToken,
       ADMIN_ENCRYPTION_KEY: encryptionSecret,
-      TKSLOPPER_SERVICE_CREDENTIAL: "tksvc_wiring01_override-test-secret",
+      TKSLOPPER_SERVICE_CREDENTIAL: "tksvc_wiring0001_override-test-secret",
     };
     const p = createConfiguredModelProvider(tkEnv(values));
     expect(p.name).toBe(`tkslopper:${ARTIFACT}`);
@@ -1005,7 +1071,11 @@ describe("tkslopper wiring", () => {
     expect(p.name).toBe("unavailable");
     const error = await rejection(p.generate(brief, []));
     expect(error.message).toContain("TKSLOPPER_GATEWAY_URL");
-    expect(createImageSafetyInspector(missing)).toBeUndefined();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(
+      createImageSafetyInspector(missing)?.inspect(new Uint8Array([1]), "image/jpeg"),
+    ).resolves.toEqual({ status: "unavailable" });
+    expect(JSON.stringify(errors.mock.calls)).toContain("TKSLOPPER_GATEWAY_URL");
 
     const unknown = tkEnv({ DB: database, INFERENCE_TRANSPORT: "gateway" });
     const q = createConfiguredModelProvider(unknown);

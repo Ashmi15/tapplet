@@ -312,9 +312,9 @@ async function overview(env: StudioEnv): Promise<Response> {
     aliases:
       transport === "tkslopper"
         ? {
-            artifact: env.TKSLOPPER_ARTIFACT_ALIAS ?? null,
-            review: env.TKSLOPPER_REVIEW_ALIAS ?? null,
-            image: env.TKSLOPPER_IMAGE_ALIAS ?? null,
+            artifact: env.TKSLOPPER_ARTIFACT_ALIAS?.trim() || null,
+            review: env.TKSLOPPER_REVIEW_ALIAS?.trim() || null,
+            image: env.TKSLOPPER_IMAGE_ALIAS?.trim() || null,
           }
         : null,
     model: modelSummary(env, row),
