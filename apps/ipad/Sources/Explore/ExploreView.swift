@@ -56,8 +56,9 @@ struct ExploreView: View {
                 if store.examples.isEmpty {
                     unavailableState
                 } else {
+                    let projects = filteredProjects
                     catalogControls
-                    results
+                    results(projects)
                 }
             }
             .padding(32)
@@ -200,15 +201,15 @@ struct ExploreView: View {
     }
 
     @ViewBuilder
-    private var results: some View {
+    private func results(_ projects: [ArtifactProject]) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            resultsHeader
+            resultsHeader(count: projects.count)
 
-            if filteredProjects.isEmpty {
+            if projects.isEmpty {
                 emptyResultsState
             } else {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
-                    ForEach(filteredProjects) { project in
+                    ForEach(projects) { project in
                         let isCopying = copyingProjectIDs.contains(project.id)
                         AppletProjectCard(
                             project: project,
@@ -228,7 +229,10 @@ struct ExploreView: View {
     }
 
     @ViewBuilder
-    private var resultsHeader: some View {
+    private func resultsHeader(count: Int) -> some View {
+        let resultCount = Text("\(count) \(count == 1 ? "example" : "examples")")
+            .font(TappletTheme.Typography.section)
+            .foregroundStyle(TappletTheme.ink)
         if dynamicTypeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: 10) {
                 resultCount
@@ -241,12 +245,6 @@ struct ExploreView: View {
                 clearFiltersButton
             }
         }
-    }
-
-    private var resultCount: some View {
-        Text("\(filteredProjects.count) \(filteredProjects.count == 1 ? "example" : "examples")")
-            .font(TappletTheme.Typography.section)
-            .foregroundStyle(TappletTheme.ink)
     }
 
     @ViewBuilder

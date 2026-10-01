@@ -10,6 +10,47 @@ final class ArtifactModelsTests: XCTestCase {
         XCTAssertEqual(artifact.createdAt, "2026-08-02T00:00:00Z", "ISO timestamps remain wire-format strings")
     }
 
+    func testServerTimestampsPreserveFractionalSecondsAndTimeZoneOffsets() throws {
+        let midnight = Date(timeIntervalSince1970: 1_785_628_800)
+        let timestamps: [(String, TimeInterval)] = [
+            ("2026-08-02T00:00:00Z", 0),
+            ("2026-08-02T00:00:00.125Z", 0.125),
+            ("2026-08-02T08:00:00+08:00", 0),
+            ("2026-08-01T19:00:00.750-05:00", 0.75)
+        ]
+        let revision = ArtifactRevision(
+            id: "r1", artifactId: "a1", sourceHash: "hash", byteLength: 0,
+            kind: .generate, model: "model", promptVersion: "1", createdAt: timestamps[0].0
+        )
+        var project = ArtifactProject(
+            artifact: Artifact(
+                id: "a1", title: "Title", summary: "Summary", tags: [], creationBrief: "Brief",
+                headRevisionId: "r1", createdAt: timestamps[0].0, updatedAt: timestamps[0].0
+            ),
+            source: ArtifactSource(revision: revision, html: ""), revisions: [revision]
+        )
+        var publication = ArtifactPublication(
+            slug: "class", url: URL(string: "https://example.test/class")!, title: "Title",
+            createdAt: timestamps[0].0, expiresAt: timestamps[0].0
+        )
+        for (timestamp, offset) in timestamps {
+            project.artifact.updatedAt = timestamp
+            publication.expiresAt = timestamp
+            let expected = midnight.addingTimeInterval(offset)
+            XCTAssertEqual(project.updatedAt.timeIntervalSince1970, expected.timeIntervalSince1970, accuracy: 0.000_001)
+            XCTAssertEqual(try XCTUnwrap(publication.expirationDate).timeIntervalSince1970, expected.timeIntervalSince1970, accuracy: 0.000_001)
+            XCTAssertFalse(publication.isExpired(at: expected.addingTimeInterval(-0.001)))
+            XCTAssertTrue(publication.isExpired(at: expected))
+        }
+
+        project.artifact.updatedAt = "invalid"
+        publication.expiresAt = "invalid"
+        XCTAssertEqual(project.updatedAt, .distantPast)
+        XCTAssertNil(publication.expirationDate)
+        XCTAssertTrue(publication.isExpired(at: midnight))
+        XCTAssertEqual(publication.formattedExpirationDate(), "invalid")
+    }
+
     @MainActor func testBundledHTMLExampleLoads() {
         let store = TappletStore(storageDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString), bundle: Bundle(for: TappletStore.self))
         XCTAssertEqual(store.examples.count, 18)
