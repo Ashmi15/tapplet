@@ -27,6 +27,16 @@ final class AppletPreviewSecurityTests: XCTestCase {
 
     @MainActor
     func testOfflineRuleListCompilesAndBundledPreviewReachesReady() async throws {
+        try await checkBundledPreview(takesSnapshot: false)
+    }
+
+    @MainActor
+    func testEditorPreviewTakesOneSnapshotPerRevision() async throws {
+        try await checkBundledPreview(takesSnapshot: true)
+    }
+
+    @MainActor
+    private func checkBundledPreview(takesSnapshot: Bool) async throws {
         let storageDirectory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: storageDirectory) }
@@ -37,6 +47,7 @@ final class AppletPreviewSecurityTests: XCTestCase {
         let source = try XCTUnwrap(store.examples.first?.source)
         var loadState = PreviewLoadState.loading
         var presentableError: String?
+        var snapshots: [Data] = []
         let ready = expectation(description: "Bundled preview reaches ready after offline rules install")
         let coordinator = AppletPreviewWebView.Coordinator(
             state: Binding(
@@ -50,7 +61,7 @@ final class AppletPreviewSecurityTests: XCTestCase {
                 get: { presentableError },
                 set: { presentableError = $0 }
             ),
-            onSnapshot: nil,
+            onSnapshot: takesSnapshot ? { snapshots.append($0) } : nil,
             assets: []
         )
         let configuration = WKWebViewConfiguration()
@@ -59,7 +70,7 @@ final class AppletPreviewSecurityTests: XCTestCase {
             coordinator.handler,
             forURLScheme: AssetSchemeHandler.scheme
         )
-        let webView = WKWebView(
+        let webView = SnapshotCountingWebView(
             frame: CGRect(x: 0, y: 0, width: 1024, height: 768),
             configuration: configuration
         )
@@ -72,6 +83,13 @@ final class AppletPreviewSecurityTests: XCTestCase {
         await fulfillment(of: [ready], timeout: 10)
         XCTAssertEqual(loadState, .ready)
         XCTAssertNil(presentableError)
+        XCTAssertEqual(webView.snapshotCount, takesSnapshot ? 1 : 0)
+        XCTAssertEqual(snapshots.count, takesSnapshot ? 1 : 0)
+        if takesSnapshot {
+            XCTAssertNotNil(UIImage(data: try XCTUnwrap(snapshots.first)))
+        }
+        coordinator.load(source)
+        XCTAssertEqual(webView.snapshotCount, takesSnapshot ? 1 : 0, "Updating with the same revision must not take another snapshot")
         withExtendedLifetime(webView) {}
     }
 
@@ -93,5 +111,22 @@ final class AppletPreviewSecurityTests: XCTestCase {
         XCTAssertFalse(PreviewContentSecurity.allowsNavigation(to: managed, isMainFrame: false, isFormSubmission: false))
         XCTAssertFalse(PreviewContentSecurity.allowsNavigation(to: managed, isMainFrame: true, isFormSubmission: true))
         XCTAssertFalse(PreviewContentSecurity.allowsNavigation(to: nil, isMainFrame: true, isFormSubmission: false))
+    }
+}
+
+@MainActor
+private final class SnapshotCountingWebView: WKWebView {
+    private(set) var snapshotCount = 0
+
+    override func takeSnapshot(
+        with snapshotConfiguration: WKSnapshotConfiguration?,
+        completionHandler: @escaping @MainActor @Sendable (UIImage?, (any Error)?) -> Void
+    ) {
+        snapshotCount += 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        completionHandler(image, nil)
     }
 }

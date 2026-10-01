@@ -210,7 +210,9 @@ struct AppletPreviewWebView: UIViewRepresentable {
                 restoring = false
                 return
             }
-            guard snapshottedRevisionIDs.insert(requested.revision.id).inserted else { return }
+            guard onSnapshot != nil,
+                  snapshottedRevisionIDs.insert(requested.revision.id).inserted
+            else { return }
             let revisionID = requested.revision.id
             webView.takeSnapshot(with: nil) { [weak self] image, _ in
                 guard self?.displayed?.revision.id == revisionID,

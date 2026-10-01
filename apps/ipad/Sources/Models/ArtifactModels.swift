@@ -62,7 +62,10 @@ struct ArtifactPublication: Codable, Equatable, Sendable {
     var expiresAt: String
     var revokedAt: String? = nil
 
-    var expirationDate: Date? { ISO8601DateFormatter.fractional.date(from: expiresAt) ?? ISO8601DateFormatter().date(from: expiresAt) }
+    var expirationDate: Date? {
+        (try? Date(expiresAt, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+            ?? (try? Date(expiresAt, strategy: .iso8601))
+    }
     func isExpired(at date: Date = .now) -> Bool { expirationDate.map { $0 <= date } ?? true }
     func formattedExpirationDate() -> String {
         guard let expirationDate else { return expiresAt }
@@ -78,8 +81,8 @@ struct ArtifactProject: Codable, Equatable, Identifiable, Sendable {
     var isExample = false
     var id: String { artifact.id }
     var updatedAt: Date {
-        ISO8601DateFormatter.fractional.date(from: artifact.updatedAt)
-            ?? ISO8601DateFormatter().date(from: artifact.updatedAt)
+        (try? Date(artifact.updatedAt, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+            ?? (try? Date(artifact.updatedAt, strategy: .iso8601))
             ?? .distantPast
     }
 }
@@ -114,12 +117,4 @@ struct ExampleSearchDescriptor: Codable, Equatable, Identifiable, Sendable {
     var descriptor: String
     var curated: Bool
     var id: String { revisionId }
-}
-
-extension ISO8601DateFormatter {
-    static var fractional: ISO8601DateFormatter {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }
 }
