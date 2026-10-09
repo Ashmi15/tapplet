@@ -31,7 +31,7 @@ function render(){steps.innerHTML=order.map((n,i)=>`<div class="step">${i+1}. ${
 steps.onclick=e=>{const i=+e.target.dataset.i;if(!i)return;[order[i],order[i-1]]=[order[i-1],order[i]];render()};
 document.getElementById('checkS').onclick=()=>{
   const correct=order.every((x,i)=>x===i);
-  sm.textContent=correct?'✓ Correct! That's a fair conclusion: start with what you saw, then a careful guess, then the gaps.':'✗ Try again. Start with what you saw. Then say what it might mean. Then say what you cannot prove yet.';
+  sm.textContent=correct?'✓ Correct! That\'s a fair conclusion: start with what you saw, then a careful guess, then the gaps.':'✗ Try again. Start with what you saw. Then say what it might mean. Then say what you cannot prove yet.';
 };
 document.getElementById('reset').onclick=()=>{notes.querySelectorAll('select').forEach(s=>{s.value='';s.classList.remove('correct','incorrect');});evidence.value='';evidence.classList.remove('correct','incorrect');order=[2,0,3,1];render();nm.textContent=em.textContent=sm.textContent=''};
 render();

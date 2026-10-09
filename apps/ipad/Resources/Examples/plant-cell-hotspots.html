@@ -1,6 +1,6 @@
 <!doctype html><html lang="en-SG"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Parts of a plant cell</title><style>
-:root{--ink:#193d23;--correct:#2f7a4f;--incorrect:#a94438;--match:#d39a19}*{box-sizing:border-box}body{margin:0;background:#edf7ed;color:var(--ink);font:16px/1.45 system-ui,sans-serif}main{max-width:920px;margin:auto;padding:16px 18px 24px}header{border-bottom:2px solid var(--ink);padding-bottom:12px}h1{font-size:clamp(26px,5vw,40px);line-height:1.05;margin:0}header p{margin:10px 0 0;max-width:640px}h2{font-size:18px;margin:0 0 8px}.card{background:white;padding:14px;border-radius:16px;margin-top:16px}.cell{position:relative;height:430px;border:18px solid #3f7548;border-radius:35px;background:#9dcc91;box-shadow:inset 0 0 0 7px #e1f3d9}.vacuole{position:absolute;left:34%;top:24%;width:43%;height:52%;background:#d9eff4;border:5px solid #81abb3;border-radius:40%}.nucleus{position:absolute;left:17%;top:30%;width:18%;aspect-ratio:1;border-radius:50%;background:#9b73ad}.chloroplast{position:absolute;width:12%;height:8%;background:#2e8a48;border-radius:50%}.hot{position:absolute;min-width:44px;min-height:44px;border:3px solid white;border-radius:50%;background:#185e34;color:white;font-weight:bold;cursor:pointer}.hot.found{background:var(--match)}.panel{padding:11px;background:#e6f4e7;border-radius:10px;min-height:65px;margin-top:10px}#progress{margin:10px 0 0}.match{margin-top:18px;padding-top:16px;border-top:2px solid var(--ink)}.match.locked{opacity:.55}.picks,.jobs{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.picks button,.jobs button,button{min-height:44px;border:1px solid var(--ink);border-radius:10px;padding:8px 12px;font:inherit;background:#fff;color:var(--ink);font-weight:650}.picks button.selected,.jobs button.selected{background:#185e34;color:#fff}.picks button.paired,.jobs button.paired{background:var(--match);color:var(--ink);text-decoration:line-through}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}#reset{background:#185e34;color:#fff;font-weight:700}#feedback{min-height:44px;margin:10px 0 0;line-height:1.4}.match-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #c9d6cc}.match-row:first-child{border-top:0}.match-label{flex:1;font-weight:650}.match-result{flex:1;color:var(--correct);font-weight:700}@media(max-width:600px){.cell{height:330px}main{padding:14px}}
-</style></head><body><main><header><h1>Which structures keep a plant cell working?</h1><p>Tap each marker to find the parts. Then match each structure to its job.</p></header><section class="card"><div class="cell" role="img" aria-label="Plant cell with cell wall, membrane, vacuole, nucleus and chloroplasts"><div class="vacuole"></div><div class="nucleus"></div><i class="chloroplast" style="left:72%;top:12%"></i><i class="chloroplast" style="left:79%;top:79%"></i><i class="chloroplast" style="left:20%;top:72%"></i><button class="hot" style="left:-3%;top:45%" data-i="0">1</button><button class="hot" style="left:6%;top:45%" data-i="1">2</button><button class="hot" style="left:52%;top:45%" data-i="2">3</button><button class="hot" style="left:21%;top:35%" data-i="3">4</button><button class="hot" style="left:75%;top:10%" data-i="4">5</button></div><div id="panel" class="panel">Choose a numbered structure.</div><p id="progress">0 / 5 explored</p><div class="match locked" id="match"><h2>What job does each part do?</h2><p id="matchHint">Find all five numbered parts first, then match each one to its job.</p><div class="picks" id="picks"></div><div class="jobs" id="jobs"></div><p id="feedback" aria-live="polite"></p><div id="matchedList"></div></div><div class="actions"><button id="reset">Reset</button></div></section></main><script>
+*{box-sizing:border-box}body{margin:0;background:#edf7ed;color:#193d23;font:16px/1.45 system-ui,sans-serif}main{max-width:920px;margin:auto;padding:16px 18px 24px}header{border-bottom:2px solid #193d23;padding-bottom:12px}h1{font-size:clamp(26px,5vw,40px);line-height:1.05;margin:0}header p{margin:10px 0 0;max-width:640px}h2{font-size:18px;margin:0 0 8px}.card{background:white;padding:14px;border-radius:16px;margin-top:16px}.cell{position:relative;height:430px;border:18px solid #3f7548;border-radius:35px;background:#9dcc91;box-shadow:inset 0 0 0 7px #e1f3d9}.vacuole{position:absolute;left:34%;top:24%;width:43%;height:52%;background:#d9eff4;border:5px solid #81abb3;border-radius:40%}.nucleus{position:absolute;left:17%;top:30%;width:18%;aspect-ratio:1;border-radius:50%;background:#9b73ad}.chloroplast{position:absolute;width:12%;height:8%;background:#2e8a48;border-radius:50%}.hot{position:absolute;min-width:44px;min-height:44px;border:3px solid white;border-radius:50%;background:#185e34;color:white;font-weight:bold;cursor:pointer;z-index:10}.hot.done{background:#d39a19}.panel{padding:11px;background:#e6f4e7;border-radius:10px;min-height:65px;margin-top:10px}#progress{margin:10px 0 0}.match{margin-top:18px;padding-top:16px;border-top:2px solid #193d23}.match.locked{opacity:.55}.picks,.jobs{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.picks button,.jobs button,button{min-height:44px;border:1px solid #193d23;border-radius:10px;padding:8px 12px;font:inherit;background:#fff;color:#193d23;font-weight:650}.picks button.selected,.jobs button.selected{background:#185e34;color:#fff}.picks button.paired,.jobs button.paired{background:#d39a19;color:#193d23;text-decoration:line-through}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}#reset{background:#185e34;color:#fff;font-weight:700}#feedback{min-height:44px;margin:10px 0 0;line-height:1.4}.match-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #c9d6cc}.match-row:first-child{border-top:0}.match-label{flex:1;font-weight:650}.match-result{flex:1;color:#2f7a4f;font-weight:700}@media(max-width:600px){.cell{height:330px}main{padding:14px}}
+</style></head><body><main><header><h1>Which structures keep a plant cell working?</h1><p>Tap each marker to find the parts. Then match each structure to its job.</p></header><section class="card"><div class="cell" role="img" aria-label="Plant cell with cell wall, membrane, vacuole, nucleus and chloroplasts"><div class="vacuole"></div><div class="nucleus"></div><i class="chloroplast" style="left:72%;top:12%"></i><i class="chloroplast" style="left:79%;top:79%"></i><i class="chloroplast" style="left:20%;top:72%"></i><button type="button" class="hot" style="left:-3%;top:45%" data-i="0">1</button><button type="button" class="hot" style="left:6%;top:45%" data-i="1">2</button><button type="button" class="hot" style="left:52%;top:45%" data-i="2">3</button><button type="button" class="hot" style="left:21%;top:35%" data-i="3">4</button><button type="button" class="hot" style="left:75%;top:10%" data-i="4">5</button></div><div id="panel" class="panel">Choose a numbered structure.</div><p id="progress">0 / 5 explored</p><div class="match locked" id="match"><h2>What job does each part do?</h2><p id="matchHint">Find all five numbered parts first, then match each one to its job.</p><div class="picks" id="picks"></div><div class="jobs" id="jobs"></div><p id="feedback" aria-live="polite"></p><div id="matchedList"></div></div><div class="actions"><button id="reset">Reset</button></div></section></main><script>
 const names=['Cell wall','Cell membrane','Large central vacuole','Nucleus','Chloroplast'];
 const looks=[
   'The thick outer layer around the cell.',
@@ -17,9 +17,9 @@ const jobs=[
   'Absorbs light energy for photosynthesis.'
 ];
 const why=[
-  'The wall is rigid cellulose. It holds the cell's shape when water presses out; making food is the chloroplast's job.',
+  'The wall is rigid cellulose. It holds the cell\'s shape when water presses out; making food is the chloroplast\'s job.',
   'The membrane is the gate. It lets some substances through and keeps others out.',
-  'The vacuole's sap pushes out on the wall. That pressure keeps the cell turgid; it does not direct the cell's genes.',
+  'The vacuole\'s sap pushes out on the wall. That pressure keeps the cell turgid; it does not direct the cell\'s genes.',
   'The nucleus holds the genetic material. It directs activities; it does not trap light.',
   'Chloroplasts are green because of chlorophyll. They trap light to make food.'
 ];
@@ -36,15 +36,17 @@ function unlock(){
     ?'Tap a structure, then tap the job that belongs to it.'
     :'Find all five numbered parts first, then match each one to its job.';
 }
-document.querySelector('.cell').onclick=e=>{
-  if(!e.target.classList.contains('hot'))return;
-  const i=+e.target.dataset.i;
-  seen.add(i);
-  e.target.classList.add('found');
-  document.getElementById('panel').innerHTML=`<strong>${names[i]}:</strong> ${looks[i]}`;
-  progress();
-  unlock();
-};
+document.querySelectorAll('.hot').forEach(btn=>{
+  btn.onclick=e=>{
+    e.stopPropagation();
+    const i=+btn.dataset.i;
+    seen.add(i);
+    btn.classList.add('done');
+    document.getElementById('panel').innerHTML=`<strong>${names[i]}:</strong> ${looks[i]}`;
+    progress();
+    unlock();
+  };
+});
 picks.onclick=e=>{
   if(seen.size<5||e.target.tagName!=='BUTTON'||e.target.classList.contains('paired'))return;
   picks.querySelectorAll('button').forEach(b=>b.classList.remove('selected'));
@@ -76,7 +78,7 @@ function addMatchRow(i){
 }
 document.getElementById('reset').onclick=()=>{
   seen.clear();paired.clear();chosen=null;
-  document.querySelectorAll('.hot').forEach(x=>x.classList.remove('found'));
+  document.querySelectorAll('.hot').forEach(x=>x.classList.remove('done'));
   picks.querySelectorAll('button').forEach(b=>b.className='');
   jobsBox.querySelectorAll('button').forEach(b=>b.className='');
   document.getElementById('panel').textContent='Choose a numbered structure.';
