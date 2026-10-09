@@ -1,17 +1,38 @@
 <!doctype html><html lang="en-SG"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Observation or interpretation?</title><style>
-:root{--ink:#24362a;--muted:#5b6d60;--paper:#f4efe4;--line:#c9c2b0;--rule:#d7d0c0;--ok:#2f6a45}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 system-ui,sans-serif}main{max-width:980px;margin:auto;padding:16px 18px 22px}header{border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:14px}h1{font-size:clamp(24px,4.4vw,38px);line-height:1.05;margin:0}header p{margin:8px 0 0;max-width:540px;color:var(--muted)}.grid{display:grid;grid-template-columns:1.1fr 1fr;gap:22px}h2{font-size:16px;margin:0 0 8px}.note{display:block;padding:8px 0;border-bottom:1px solid var(--rule)}.note span{display:block;margin-bottom:6px}select,button{min-height:44px;border:1px solid var(--ink);border-radius:0;background:#fbf8f1;color:var(--ink);padding:8px 10px;font:inherit}select{width:100%}button{font-weight:700;margin:8px 8px 0 0}.step{display:flex;align-items:center;gap:10px;min-height:52px;padding:6px 0;border-bottom:1px solid var(--rule)}.step button{margin:0 0 0 auto;min-width:44px}.msg{min-height:44px;margin:8px 0 0;line-height:1.4}#reset{background:transparent}@media(max-width:700px){.grid{grid-template-columns:1fr}main{padding:14px}}
+:root{--ink:#24362a;--muted:#5b6d60;--paper:#f4efe4;--line:#c9c2b0;--rule:#d7d0c0;--ok:#2f6a45;--err:#a94438}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 system-ui,sans-serif}main{max-width:980px;margin:auto;padding:16px 18px 22px}header{border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:14px}h1{font-size:clamp(24px,4.4vw,38px);line-height:1.05;margin:0}header p{margin:8px 0 0;max-width:540px;color:var(--muted)}.grid{display:grid;grid-template-columns:1.1fr 1fr;gap:22px}h2{font-size:16px;margin:0 0 8px}.note{display:block;padding:8px 0;border-bottom:1px solid var(--rule)}.note span{display:block;margin-bottom:6px}select,button{min-height:44px;border:1px solid var(--ink);border-radius:0;background:#fbf8f1;color:var(--ink);padding:8px 10px;font:inherit}select{width:100%}button{font-weight:700;margin:8px 8px 0 0}.step{display:flex;align-items:center;gap:10px;min-height:52px;padding:6px 0;border-bottom:1px solid var(--rule)}.step button{margin:0 0 0 auto;min-width:44px}.msg{min-height:44px;margin:8px 0 0;line-height:1.4}#reset{background:transparent}select.correct{border-color:var(--ok);background:#e8f5e9}select.incorrect{border-color:var(--err);background:#ffebee}@media(max-width:700px){.grid{grid-template-columns:1fr}main{padding:14px}}
 </style></head><body><main><header><h1>Observation or interpretation?</h1><p>What did you actually see on Market Street, and what are you guessing? Sort the notes, then test a claim.</p></header><div class="grid"><section><h2>1. Sort these notes</h2><div id="notes"></div><button id="check">Check my sort</button><p class="msg" id="nm" aria-live="polite"></p></section><section><h2>2. Did the trees cool the street?</h2><p>Twelve new shade trees stand beside a pavement that was 30°C. What would actually test whether the trees made afternoons cooler?</p><select id="evidence"><option value="">Choose evidence…</option><option value="ok">Temperatures at the same places and times, in similar weather, before and after the trees were planted</option><option>One nice photograph of the trees</option><option>A survey of favourite trees</option><option>Shop counts from another street</option></select><button id="checkE">Check this</button><p class="msg" id="em" aria-live="polite"></p><h2>3. Put a fair conclusion in order</h2><div id="steps"></div><button id="checkS">Check the order</button><button id="reset">Reset</button><p class="msg" id="sm" aria-live="polite"></p></section></div></main><script>
 const notes=document.getElementById('notes'),nm=document.getElementById('nm'),em=document.getElementById('em'),sm=document.getElementById('sm'),evidence=document.getElementById('evidence'),steps=document.getElementById('steps');
 const data=[['Four units display For Rent signs','o'],['32 people pass in ten minutes','o'],['Six new cycle racks stand by the bus stop','o'],['Residents may combine cycling and public transport','i'],['The whole neighbourhood is becoming unpopular','n'],['Most young families have moved away','n']];
 const op='<option value="">Choose…</option><option value="o">Observation (I saw or measured this)</option><option value="i">Interpretation (this might mean…)</option><option value="n">Needs more evidence</option>';
 notes.innerHTML=data.map(x=>`<label class="note"><span>${x[0]}</span><select data-a="${x[1]}">${op}</select></label>`).join('');
-document.getElementById('check').onclick=()=>nm.textContent=[...notes.querySelectorAll('select')].every(x=>x.value===x.dataset.a)?'Yes. The first three are things you could count or photograph. The others jump to a story.':'Ask: did someone see this, are they guessing what it means, or would they need more proof?';
-document.getElementById('checkE').onclick=()=>em.textContent=evidence.value==='ok'?'Yes. You need temperatures from the same places, at the same times, in similar weather, before and after the trees went in.':'A photo or a survey cannot tell you if the street got cooler. You need temperatures you can compare.';
-const txt=['Write down what you saw or measured','Say what it might mean. Use words like “may” or “suggests”','Say what this evidence cannot prove','Name the extra evidence you still need'];
+document.getElementById('check').onclick=()=>{
+  const selects=[...notes.querySelectorAll('select')];
+  let allCorrect=true;
+  selects.forEach(x=>{
+    x.classList.remove('correct','incorrect');
+    if(x.value===x.dataset.a){
+      x.classList.add('correct');
+    }else{
+      x.classList.add('incorrect');
+      allCorrect=false;
+    }
+  });
+  nm.textContent=allCorrect?'✓ Correct! Yes. The first three are things you could count or photograph. The others jump to a story.':'✗ Try again. Ask: did someone see this, are they guessing what it means, or would they need more proof?';
+};
+document.getElementById('checkE').onclick=()=>{
+  const ok=evidence.value==='ok';
+  evidence.classList.remove('correct','incorrect');
+  evidence.classList.add(ok?'correct':'incorrect');
+  em.textContent=ok?'✓ Correct! Yes. You need temperatures from the same places, at the same times, in similar weather, before and after the trees went in.':'✗ Try again. A photo or a survey cannot tell you if the street got cooler. You need temperatures you can compare.';
+};
+const txt=['Write down what you saw or measured','Say what it might mean. Use words like "may" or "suggests"','Say what this evidence cannot prove','Name the extra evidence you still need'];
 let order=[2,0,3,1];
 function render(){steps.innerHTML=order.map((n,i)=>`<div class="step">${i+1}. ${txt[n]}<button data-i="${i}" aria-label="Move up">↑</button></div>`).join('')}
 steps.onclick=e=>{const i=+e.target.dataset.i;if(!i)return;[order[i],order[i-1]]=[order[i-1],order[i]];render()};
-document.getElementById('checkS').onclick=()=>sm.textContent=order.every((x,i)=>x===i)?'That’s a fair conclusion: start with what you saw, then a careful guess, then the gaps.':'Start with what you saw. Then say what it might mean. Then say what you cannot prove yet.';
-document.getElementById('reset').onclick=()=>{notes.querySelectorAll('select').forEach(s=>s.value='');evidence.value='';order=[2,0,3,1];render();nm.textContent=em.textContent=sm.textContent=''};
+document.getElementById('checkS').onclick=()=>{
+  const correct=order.every((x,i)=>x===i);
+  sm.textContent=correct?'✓ Correct! That's a fair conclusion: start with what you saw, then a careful guess, then the gaps.':'✗ Try again. Start with what you saw. Then say what it might mean. Then say what you cannot prove yet.';
+};
+document.getElementById('reset').onclick=()=>{notes.querySelectorAll('select').forEach(s=>{s.value='';s.classList.remove('correct','incorrect');});evidence.value='';evidence.classList.remove('correct','incorrect');order=[2,0,3,1];render();nm.textContent=em.textContent=sm.textContent=''};
 render();
 </script></body></html>
